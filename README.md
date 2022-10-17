@@ -7,6 +7,7 @@ This repository contains the code associated with the manuscript **Large-scale e
 
 - [Evaluating rate of forgetting predictions](./output/04_evaluate_ROF_predictions.md)
 - [Evaluating behavioural predictions](./output/05_evaluate_behavioural_predictions.md)
+- [Data statistics](./output/06_data_statistics.md)
 
 
 ## Rerunning the code
