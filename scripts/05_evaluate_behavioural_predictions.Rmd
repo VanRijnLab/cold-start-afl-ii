@@ -1,0 +1,1063 @@
+---
+title: "Evaluate behavioural predictions"
+author: "Maarten van der Velde"
+date: "Last updated: `r Sys.Date()`"
+output:
+  html_notebook:
+    smart: no
+    toc: yes
+    toc_float: yes
+  github_document:
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+# Overview
+
+This notebook evaluates the behavioural predictions (RT, accuracy) that follow from the predicted rates of forgetting.
+We simulate the behavioural predictions that the adaptive fact learning system would have made, if it had used the predicted rate of forgetting as the starting estimate in the learning sequence.
+
+
+# Setup
+
+```{r}
+library(fst)
+library(data.table)
+library(tidyr)
+library(purrr)
+library(furrr)
+library(stringr)
+library(ggplot2)
+library(patchwork)
+library(wesanderson)
+library(lme4)
+library(lmerTest)
+library(multcomp)
+```
+
+```{r}
+source(file.path("..", "scripts", "99_slimstampen_model_funs.R"))
+```
+
+```{r}
+future::plan("multiprocess", workers = 6) # Set to desired number of cores
+```
+
+```{r}
+theme_set(theme_light(base_size = 14) +
+            theme(strip.text = element_text(colour = "black")))
+
+condition_colours <- wes_palette("Darjeeling1", n = 5)
+condition_colours[c(2, 4, 5)] <- condition_colours[c(4, 5, 2)]
+
+dataset_colours <- wes_palette("Darjeeling2", n = 5)[c(2, 3)]
+```
+
+
+## Helper functions
+
+```{r}
+load_data_with_predictions <- function (course) {
+  
+  # Data
+  d_full <- read_fst(file.path("..", "data", paste0("formatted_", str_replace_all(course, " ", "_"), ".fst")))
+  setDT(d_full)
+  d <- d_full[!is.na(fact_id), .(user_id, fact_id, start_time, rt, correct)]
+  rm(d_full)
+  gc()
+  setorder(d, user_id, fact_id, start_time)
+  
+  # ROF predictions
+  pred_user <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_user_", str_replace_all(course, " ", "_"), ".fst")))
+  pred_fact <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_fact_", str_replace_all(course, " ", "_"), ".fst")))
+  pred_fact_user <- read_fst(file.path("..", "data", "predictions", paste0("pred_fact_and_user_", str_replace_all(course, " ", "_"), ".fst")))
+  setDT(pred_user)
+  setDT(pred_fact)
+  setDT(pred_fact_user)
+  
+  # Remove NA and duplicates
+  pred_user <- unique(pred_user[!is.na(alpha)])
+  pred_fact <- unique(pred_fact[!is.na(alpha)])
+  pred_fact_user <- unique(pred_fact_user[!is.na(alpha)])
+  
+  # Make Domain prediction
+  pred_domain <- mean(unique(pred_fact, by = c("fact_id"))$pred_fact)
+  pred_default <- 0.3
+  
+  # Combine
+  setnames(pred_user, "n_train_obs", "n_train_obs_user")
+  setnames(pred_fact, "n_train_obs", "n_train_obs_fact")
+  pred_all <- merge(pred_user, pred_fact, by = c("user_id", "fact_id", "alpha", "n_reps"), all = TRUE)
+  pred_all <- merge(pred_all, pred_fact_user, by = c("user_id", "fact_id", "alpha"), all = TRUE)
+  pred_all[, pred_default := pred_default]
+  pred_all[, pred_domain := pred_domain]
+
+  d_prep <- d[, .(user_id,
+                  fact_id,
+                  text = "",
+                  start_time,
+                  rt,
+                  correct,
+                  threshold = -0.8)]
+  
+  d_pred <- merge(pred_all, d_prep, by = c("user_id", "fact_id"))
+  
+  return(d_pred)
+}
+
+predict_behaviour <- function (d) {
+  
+    # Process the data in manageable chunks
+    chunk_size <- 1e4
+    obs <- unique(d[, .(user_id, fact_id)])
+    obs_chunks <- c(seq(1, nrow(obs), by = chunk_size), nrow(obs)+1)
+    
+    pred_beh <- map_dfr(1:(length(obs_chunks)-1), function (i) {
+      
+      msg <- paste("Chunk", i, "/", length(obs_chunks)-1)
+      system(paste("echo", msg))
+      
+      obs_i <- obs[obs_chunks[i]:obs_chunks[i+1]-1]
+      d_i <- d[obs_i, on = .(user_id, fact_id)]
+      d_i_list <- split(d_i, by = c("user_id", "fact_id"), drop = TRUE)
+      
+      pred_beh_i <- future_map_dfr(d_i_list, function (learn_seq) {
+        
+        # Organise predictions for this sequence
+        learn_seq_preds <- pivot_longer(
+          learn_seq[1,], 
+          pred_user:pred_domain,
+          names_to = "prediction_type",
+          names_prefix = "pred_",
+          values_to = "predicted_alpha"
+        )
+        setDT(learn_seq_preds)
+        
+        # Look only at trial 3 in each sequence
+        trial <- learn_seq[3,]
+        delay <- learn_seq[2:3, diff(start_time)]
+        
+        # Calculate behavioural predictions for each prediction method
+        map_dfr(seq(nrow(learn_seq_preds)), function (j) {
+          
+          prediction_type <- learn_seq_preds[j, prediction_type]
+          predicted_alpha <- learn_seq_preds[j, predicted_alpha]
+    
+          predicted_activation <- NA
+          predicted_accuracy <- NA
+          predicted_rt <- NA
+    
+          if (!is.na(predicted_alpha)) {
+            
+            predicted_activation <- calculate_activation(
+              time = trial[, start_time],
+              id = trial[, fact_id],
+              factalpha = predicted_alpha,
+              responses = learn_seq[1:2,]
+            )
+      
+            predicted_accuracy <- p_recall(
+              activation = predicted_activation,
+              threshold = -0.8,
+              activation_noise = 0.5
+            )
+            
+            predicted_rt <- estimate_reaction_time_from_activation(
+              activation = predicted_activation,
+              reading_time = 300
+            )
+          }
+          
+          return(
+            list(
+              user_id = trial[, user_id],
+              fact_id = trial[, fact_id],
+              delay = delay,
+              correct = trial[, correct],
+              rt = trial[, rt],
+              prediction_type = prediction_type,
+              predicted_alpha = predicted_alpha,
+              predicted_activation = predicted_activation,
+              predicted_accuracy = predicted_accuracy,
+              predicted_rt = predicted_rt
+            )
+          )
+          
+        })
+      })
+    })
+    
+    setDT(pred_beh)
+    
+    # Remove rows without prediction
+    pred_beh <- pred_beh[!is.na(predicted_alpha)]
+    pred_beh <- pred_beh[!is.infinite(predicted_rt)]
+    
+    # Set proper condition labels
+    condition_labels <- data.table(
+      prediction_type = c("default", "domain", "fact", "user", "fact_user"),
+      prediction_label = factor(
+        c("Default", "Domain", "Fact", "Learner", "Fact & Learner"),
+        levels = c("Default", "Domain", "Fact", "Learner", "Fact & Learner")
+      )
+    )
+    pred_beh <- pred_beh[condition_labels, on = .(prediction_type)]
+    
+    
+    return(pred_beh)
+}
+```
+
+
+# Calculate predictions
+
+Load test set data with rate of forgetting predictions:
+```{r}
+pred_gl <- load_data_with_predictions("Grandes Lignes")
+pred_ss <- load_data_with_predictions("Stepping Stones")
+```
+
+Calculate behavioural predictions for trial 3:
+```{r}
+pred_gl_beh_path <- file.path("..", "data", "predictions", "pred_behaviour_gl.fst")
+pred_ss_beh_path <- file.path("..", "data", "predictions", "pred_behaviour_ss.fst")
+
+if (!file.exists(pred_gl_beh_path)) {
+  pred_gl_beh <- predict_behaviour(pred_gl)
+  write_fst(pred_gl_beh, pred_gl_beh_path)
+} else {
+  pred_gl_beh <- read_fst(pred_gl_beh_path)
+  setDT(pred_gl_beh)
+}
+
+if (!file.exists(pred_ss_beh_path)) {
+  pred_ss_beh <- predict_behaviour(pred_ss)
+  write_fst(pred_ss_beh, pred_ss_beh_path)
+} else {
+  pred_ss_beh <- read_fst(pred_ss_beh_path)
+  setDT(pred_ss_beh)
+}
+```
+
+
+
+
+```{r}
+pred_beh <- rbind(pred_gl_beh[, course := "French"],
+                  pred_ss_beh[, course := "English"])
+
+rm(pred_gl_beh, pred_ss_beh)
+gc()
+```
+
+
+# Activation
+
+```{r}
+p_act_dist <- ggplot(pred_beh[between(predicted_activation, -2, 0)], aes(x = predicted_activation, fill = prediction_label)) +
+  facet_grid(course ~ prediction_label, scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .01) +
+  guides(fill = "none") +
+  labs(x = "RT (in s)",
+       y = "Density") +
+  scale_fill_manual(values = condition_colours)
+
+# p_act_dist
+
+ggsave(plot = p_act_dist, file.path("..", "output", "activation_distribution.png"),
+       device = "png", width = 7.5, height = 4.5)
+
+rm(p_act_dist)
+```
+
+
+
+# Response time
+
+Distribution of observed correct RT (truncated at 25 seconds for readability):
+```{r}
+p_rt_dist <- ggplot(pred_beh[correct == 1 & between(rt, 0, 25000)], aes(x = rt/1000)) +
+  facet_grid(course ~ ., scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .1) +
+  guides(fill = "none") +
+  labs(x = "RT (in s)",
+       y = "Density")
+
+# p_rt_dist
+
+ggsave(plot = p_rt_dist, file.path("..", "output", "rt_observed_distribution.png"),
+       device = "png", width = 6, height = 6)
+
+rm(p_rt_dist)
+```
+
+## Predicted response time
+
+### Distribution of predictions
+
+```{r}
+p_rt_pred_dist <- ggplot(pred_beh, aes(x = predicted_rt/1000)) +
+  facet_grid(course ~ ., scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .1) +
+  guides(fill = "none") +
+  labs(x = "Predicted RT (in s)",
+       y = "Density")
+
+# p_rt_pred_dist
+
+ggsave(plot = p_rt_pred_dist, file.path("..", "output", "rt_predicted_distribution.png"),
+       device = "png", width = 6, height = 6)
+
+rm(p_rt_pred_dist)
+```
+
+### Predicted vs observed values
+
+Calculate absolute prediction error:
+```{r}
+pred_rt_error <- (pred_beh
+                  [correct == 1]
+                  [between(rt, 0, 25000)]
+                  [, rt_pred_error := predicted_rt - rt]
+                  [, abs_rt_pred_error := abs(rt_pred_error)]
+)
+
+pred_rt_error_avg <- pred_rt_error[, .(mae = mean(abs_rt_pred_error),
+                                       ae_se = sd(abs_rt_pred_error)/.N), 
+                                   by = .(course, prediction_label)]
+  
+n_obs <- pred_rt_error[, .N, by = .(course, prediction_label)]
+```
+
+
+```{r}
+# plot_range <- range(pred_beh$predicted_rt/1000, na.rm = TRUE)
+plot_range <- c(0, 10)
+plot_breaks <- seq(0, 10, by = 2)
+# 
+# plot_range <- quantile(pred_beh$predicted_rt/1000, c(.005, .995))
+
+p_rt_pred_v_obs <- ggplot(pred_beh[correct == 1], aes(x = predicted_rt/1000, y = rt/1000, colour = prediction_label)) +
+  facet_grid(course ~ prediction_label) +
+  geom_abline(slope = 1, intercept = 0, lty = 3, alpha = 0.75) +
+  geom_point(alpha = .1, size = .1, pch = ".") +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black") +
+  geom_label(data = pred_rt_error_avg,
+            aes(label = paste("MAE =", formatC(mae/1000, digits = 3, flag = "#"))),
+            x = plot_range[2], y = plot_range[1],
+            hjust = 1, colour = "NA", size = 3,
+            alpha = .9,
+            label.size = NA) +
+  geom_text(data = pred_rt_error_avg,
+            aes(label = paste("MAE =", formatC(mae/1000, digits = 3, flag = "#"))),
+            x = plot_range[2], y = plot_range[1],
+            hjust = 1, colour = "black", size = 3) +
+  geom_label(data = n_obs,
+            aes(label = paste("n =", scales::comma(N))),
+            x = plot_range[2],
+            y = plot_range[2],
+            hjust = 1, colour = "NA", size = 3,
+            alpha = .9,
+            label.size = NA) +
+  geom_text(data = n_obs,
+            aes(label = paste("n =", scales::comma(N))),
+            x = plot_range[2],
+            y = plot_range[2],
+            hjust = 1, colour = "black", size = 3) +
+  guides(colour = "none") +
+  labs(x = "Predicted RT (s)",
+       y = "Observed RT (s)") +
+  coord_fixed(ratio = 1, xlim = plot_range, ylim = plot_range) +
+  scale_x_continuous(breaks = plot_breaks) +
+  scale_y_continuous(breaks = plot_breaks) +
+  scale_colour_manual(values = condition_colours)
+
+p_rt_pred_v_obs
+
+ggsave(plot = p_rt_pred_v_obs, file.path("..", "output", "rt_predicted_vs_observed.png"),
+       device = "png", width = 10, height = 4.5)
+
+rm(p_rt_pred_v_obs)
+```
+
+#### Prediction error
+
+Distribution of prediction error (truncated to [-5, 5] for readability):
+```{r}
+p_rt_pred_error <- ggplot(pred_rt_error, aes(x = rt_pred_error/1000, fill = prediction_label)) +
+  facet_grid(prediction_label ~ course , scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .1) +
+  guides(fill = "none") +
+  labs(x = "RT prediction error in s (predicted - observed)",
+       y = "Density") +
+  coord_cartesian(xlim = c(-5, 5)) +
+  scale_fill_manual(values = condition_colours)
+
+p_rt_pred_error
+
+ggsave(plot = p_rt_pred_error, file.path("..", "output", "rt_prediction_error.png"),
+       device = "png", width = 5, height = 7.5)
+
+rm(p_rt_pred_error)
+```
+
+#### Absolute prediction error
+
+```{r}
+p_rt_abs_pred_error <- ggplot(pred_rt_error, aes(x = abs_rt_pred_error/1000, fill = prediction_label)) +
+  facet_grid(prediction_label ~ course, scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .1) +
+  guides(fill = "none") +
+  labs(x = "RT prediction error in s (predicted - observed)",
+       y = "Density") +
+  coord_cartesian(xlim = c(0, 5)) +
+  scale_fill_manual(values = condition_colours)
+
+p_rt_abs_pred_error
+
+ggsave(plot = p_rt_abs_pred_error, file.path("..", "output", "rt_absolute_prediction_error.png"),
+       device = "png", width = 5, height = 7.5)
+
+rm(p_rt_abs_pred_error)
+```
+
+```{r}
+ggplot(pred_rt_error_avg, aes(x = prediction_label, y = mae/1000, colour = course)) +
+  geom_boxplot(data = pred_rt_error,
+               aes(y = abs_rt_pred_error/1000, group = interaction(course, prediction_label)),
+               colour = "grey70",
+               width = .25,
+               outlier.shape = NA,
+               position = position_dodge(width = .5)) +
+  geom_errorbar(aes(ymin = mae/1000 - ae_se/1000, ymax = mae/1000 + ae_se/1000), width = 0, position = position_dodge(width = .5)) +
+  geom_point(position = position_dodge(width = .5)) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  labs(x = "Method",
+       y = "Absolute RT prediction error (in s)",
+       colour = "Course")
+```
+
+Fit a regression model on absolute RT prediction error.
+
+
+##### French
+
+```{r}
+m_rt_pred_error_gl_file <- file.path("..", "data", "model_fits", "m_rt_pred_error_Grandes_Lignes.rda")
+
+if (file.exists(m_rt_pred_error_gl_file)) {
+  load(m_rt_pred_error_gl_file)
+} else {
+  
+  pred_gl_reg <- (
+    pred_rt_error
+    [course == "French"]
+    [sample(.N, 1e6)]
+    [, .(prediction_label, abs_rt_pred_error, user_id, fact_id)]
+  )
+  
+  m_rt_pred_error_gl <- lmer(abs_rt_pred_error ~ prediction_label + 
+                               (1 | user_id) + (1 | fact_id),
+                             data = pred_gl_reg,
+                             control = lmerControl(optimizer ="bobyqa"))
+  
+  save(m_rt_pred_error_gl, file = m_rt_pred_error_gl_file)
+}
+
+summary(m_rt_pred_error_gl)
+```
+
+Compare different prediction types to each other:
+```{r}
+ht_rt_gl <- glht(m_rt_pred_error_gl, linfct = mcp(prediction_label = "Tukey"))
+summary(ht_rt_gl)
+```
+
+Inspect the model's residuals:
+```{r}
+qqnorm(resid(m_rt_pred_error_gl))
+qqline(resid(m_rt_pred_error_gl), col = "red")
+```
+
+```{r}
+plot(m_rt_pred_error_gl)
+```
+
+
+##### English
+
+```{r}
+m_rt_pred_error_ss_file <- file.path("..", "data", "model_fits", "m_rt_pred_error_Stepping_Stones.rda")
+
+if (file.exists(m_rt_pred_error_ss_file)) {
+  load(m_rt_pred_error_ss_file)
+} else {
+  
+  pred_ss_reg <- (
+    pred_rt_error
+    [course == "English"]
+    [sample(.N, 1e6)]
+    [, .(prediction_label, abs_rt_pred_error, user_id, fact_id)]
+  )
+  
+  m_rt_pred_error_ss <- lmer(abs_rt_pred_error ~ prediction_label + 
+                               (1 | user_id) + (1 | fact_id),
+                             data = pred_ss_reg,
+                             control = lmerControl(optimizer ="bobyqa")
+  )
+  
+  save(m_rt_pred_error_ss, file = m_rt_pred_error_ss_file)
+}
+
+summary(m_rt_pred_error_ss)
+```
+
+Compare different prediction types to each other:
+```{r}
+ht_rt_ss <- glht(m_rt_pred_error_ss, linfct = mcp(prediction_label = "Tukey"))
+summary(ht_rt_ss)
+```
+
+Inspect the model's residuals:
+```{r}
+qqnorm(resid(m_rt_pred_error_ss))
+qqline(resid(m_rt_pred_error_ss), col = "red")
+```
+
+```{r}
+plot(m_rt_pred_error_ss)
+```
+
+
+##### Comparison
+
+```{r}
+ht_rt_gl_tidy <- broom::tidy(confint(ht_rt_gl))
+ht_rt_ss_tidy <- broom::tidy(confint(ht_rt_ss))
+setDT(ht_rt_gl_tidy)
+setDT(ht_rt_ss_tidy)
+
+ht_rt_both_tidy <- rbind(ht_rt_gl_tidy[, course := "French"],
+                      ht_rt_ss_tidy[, course := "English"])
+```
+
+```{r}
+p_rt_pred_error_comp <- ggplot(ht_rt_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+  geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
+  geom_errorbar(width = 0.1) + 
+  geom_point() +
+  labs(x = "Linear hypotheses",
+       y = "Estimate",
+       caption = "Tukey's range test. Error bars show 95% family-wise confidence level.",
+       colour = "Course") +
+  coord_flip()
+
+p_rt_pred_error_comp
+
+ggsave(plot = p_rt_pred_error_comp, file.path("..", "output", "rt_prediction_error_comparisons.png"),
+       device = "png", width = 7.5, height = 5)
+
+rm(p_rt_pred_error_comp)
+```
+
+
+##### Summary plot
+
+```{r}
+pred_rt_error_avg[, prediction_rank := frank(-mae), by = .(course)]
+
+annotation_df_ss <- data.table(
+  course = rep("English", 10),
+  start = c(1, 1, 1, 1,
+            2, 2, 2,
+            3, 3,
+            4
+  ),
+  end = c(2, 3, 4, 5,
+          3, 4, 5,
+          4, 5,
+          5
+  ),
+  y = seq(max(pred_rt_error_avg$mae)*1.01 + 45, max(pred_rt_error_avg$mae)*1.01, by = -5),
+  label = c("p < .001", "p < .001", "p < .001", "p < .001",
+            "n.s.", "p < .001", "p < .001",
+            "n.s.", "p < .01",
+            "n.s.")
+)
+
+annotation_df_gl <- data.table(
+  course = rep("French", 10),
+  start = c(1, 1, 1, 1,
+            2, 2, 2,
+            3, 3,
+            4
+  ),
+  end = c(2, 3, 4, 5,
+          3, 4, 5,
+          4, 5,
+          5
+  ),
+  y = seq(max(pred_rt_error_avg$mae)*1.01 + 45, max(pred_rt_error_avg$mae)*1.01, by = -5),
+  label = c("p < .05", "p < .001", "p < .001", "p < .001",
+            "p < .01", "p < .001", "p < .001",
+            "p < .001", "p < .001",
+            "n.s.")
+)
+
+annotation_df_rt <- rbind(annotation_df_ss, annotation_df_gl)
+annotation_df_rt[, label := factor(label, levels = c("p < .001", "p < .01", "p < .05", "n.s."))]
+
+p_rt_pred_error_summary <- ggplot(pred_rt_error_avg, aes(x = prediction_rank, y = mae)) +
+  facet_grid(~ course) +
+  geom_line(data = annotation_df_rt,
+            aes(x = 1, y = 1300, lty = label, alpha = label, colour = NULL)) + # Dummy line to get legend
+  geom_line(aes(colour = course, group = course)) +
+  geom_errorbar(aes(ymin = mae - ae_se, ymax = mae + ae_se), width = 0) +
+  geom_point(aes(colour = course, group = course)) +
+  geom_label(aes(label = prediction_label), 
+             colour = "black", 
+             alpha = .9,
+             label.size = NA, 
+             nudge_y = -15) +
+  labs(x = NULL,
+       y = "Absolute prediction error:\nresponse time (s)",
+       colour = "Course") +
+  scale_x_continuous(expand = expansion(add = .75), breaks = NULL) +
+  scale_y_continuous(labels = scales::comma_format(big.mark = ".")) +
+  scale_colour_manual(values = dataset_colours) +
+  scale_linetype_manual(values = c("p < .001" = 1,
+                                   "p < .01" = 5,
+                                   "p < .05" = 2,
+                                   "n.s." = 3),
+                        name = "Pairwise comparison:") +
+  scale_alpha_manual(values = c("p < .001" = 1,
+                                "p < .01" = .75,
+                                "p < .05" = .5, 
+                                "n.s." = .25), 
+                     name = "Pairwise comparison:") +
+  guides(colour = "none") +
+  ggsignif::geom_signif(data = annotation_df_rt,
+                        aes(xmin = start, xmax = end, annotations = "", 
+                            y_position = y, lty = label, alpha = label),
+                        tip_length = 0,
+                        manual = TRUE)  +
+  theme(legend.position = "bottom",
+        legend.justification = "right")
+
+p_rt_pred_error_summary
+
+ggsave(file.path("..", "output", "rt_absolute_prediction_error_summary.png"),
+       device = "png", width = 10, height = 4)
+```
+
+##### Improvement
+
+How big was the improvement from worst to best prediction method?
+
+French:
+```{r}
+# Absolute change
+ht_rt_gl_tidy[lhs == "Fact - Default", estimate[1]]
+
+# % change
+scales::percent(
+  ht_rt_gl_tidy[lhs == "Fact - Default", estimate[1]] / fixef(m_rt_pred_error_gl)[[1]],
+  accuracy = .1)
+```
+
+English:
+```{r}
+# Absolute change
+ht_rt_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+
+# % change
+scales::percent(
+  ht_rt_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_rt_pred_error_ss)[[1]],
+  accuracy = .1)
+```
+
+# Response accuracy
+
+## Predicted response accuracy
+
+### Distribution of predictions
+
+```{r}
+p_acc_pred_dist <- ggplot(pred_beh, aes(x = predicted_accuracy, fill = prediction_label)) +
+    facet_grid(course ~ prediction_label, scales = "free_y") +
+    geom_histogram(binwidth = .01) +
+    guides(fill = "none") +
+    labs(x = "Predicted accuracy") +
+    scale_x_continuous(breaks = seq(0, 1, by = .25), labels = scales::percent_format()) +
+    scale_fill_manual(values = condition_colours)
+  
+p_acc_pred_dist
+
+ggsave(plot = p_acc_pred_dist, file.path("..", "output", "acc_predicted_distribution.png"),
+         device = "png", width = 6, height = 7.5)
+
+rm(p_acc_pred_dist)
+```
+
+
+### Predicted vs observed values
+
+```{r}
+plot_dodge <- function(y, dodge = .1) {
+  return (y * (1 + dodge) - dodge/2)
+}
+```
+
+
+```{r}
+p_acc_pred_v_obs <- ggplot(pred_beh, aes(x = predicted_accuracy, y = correct, group = prediction_label, colour = prediction_label, fill = prediction_label)) +
+    facet_grid(course ~ prediction_label) +
+    geom_point(aes(y = correct),
+               position = position_jitter(width = 0, height = .025, seed = 123),
+               size = .001, pch = ".", alpha = .1) +
+    labs(x = "Predicted accuracy",
+         y = "Response accuracy",
+         colour = "Prediction method",
+         fill = "Prediction method") +
+  guides(colour = "none",
+         fill = "none") +
+    scale_x_continuous(breaks = seq(0, 1, by = .25), labels = scales::percent_format()) +
+    scale_y_continuous(breaks = seq(0, 1, by = .25), labels = scales::percent_format()) +
+    scale_colour_manual(values = condition_colours) +
+    scale_fill_manual(values = condition_colours) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "off")
+
+p_acc_pred_v_obs
+
+ggsave(plot = p_acc_pred_v_obs, file.path("..", "output", "acc_predicted_vs_observed.png"),
+       device = "png", width = 10, height = 4.5)
+
+rm(p_acc_pred_v_obs)
+```
+
+#### Prediction error
+
+```{r}
+pred_acc_error <- (pred_beh
+                   [, acc_pred_error := predicted_accuracy - correct]
+                   [, abs_acc_pred_error := abs(acc_pred_error)])
+
+
+pred_acc_error_avg <- pred_acc_error[, .(mae = mean(abs_acc_pred_error),
+                                         ae_se = sd(abs_acc_pred_error)/.N), 
+                                     by = .(course, prediction_label)]
+
+n_obs <- pred_acc_error[, .N, by = .(course, prediction_label)]
+```
+
+Distribution of prediction error:
+```{r}
+p_acc_pred_error <- ggplot(pred_acc_error, aes(x = acc_pred_error, fill = prediction_label)) +
+  facet_grid(prediction_label ~ course , scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .01) +
+  guides(fill = "none") +
+  labs(x = "Accuracy prediction error (predicted - observed)",
+       y = "Density") +
+  coord_cartesian(xlim = c(-1, 1)) +
+  scale_fill_manual(values = condition_colours)
+
+p_acc_pred_error
+
+ggsave(plot = p_acc_pred_error, file.path("..", "output", "acc_prediction_error.png"),
+       device = "png", width = 5, height = 7.5)
+
+rm(p_acc_pred_error)
+```
+
+#### Absolute prediction error
+
+```{r}
+p_abs_acc_pred_error <- ggplot(pred_acc_error, aes(x = abs_acc_pred_error, fill = prediction_label)) +
+  facet_grid(prediction_label ~ course , scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .01) +
+  guides(fill = "none") +
+  labs(x = "Accuracy prediction error (predicted - observed)",
+       y = "Density") +
+  coord_cartesian(xlim = c(0, 1)) +
+  scale_fill_manual(values = condition_colours)
+
+p_abs_acc_pred_error
+
+ggsave(plot = p_abs_acc_pred_error, file.path("..", "output", "acc_absolute_prediction_error.png"),
+       device = "png", width = 5, height = 7.5)
+
+rm(p_abs_acc_pred_error)
+```
+
+```{r}
+ggplot(pred_acc_error_avg, aes(x = prediction_label, y = mae, colour = course)) +
+  geom_boxplot(data = pred_acc_error,
+               aes(y = abs_acc_pred_error, group = interaction(course, prediction_label)),
+               colour = "grey70",
+               width = .25,
+               outlier.shape = NA,
+               position = position_dodge(width = .5)) +
+  geom_errorbar(aes(ymin = mae - ae_se, ymax = mae + ae_se), width = 0, position = position_dodge(width = .5)) +
+  geom_point(position = position_dodge(width = .5)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Method",
+       y = "Absolute accuracy prediction error",
+       colour = "Course")
+```
+
+Fit a regression model.
+
+##### French
+
+```{r}
+m_acc_pred_error_gl_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Grandes_Lignes.rda")
+
+if (file.exists(m_acc_pred_error_gl_file)) {
+  load(m_acc_pred_error_gl_file)
+} else {
+  
+  pred_gl_reg <- (
+    pred_acc_error
+    [course == "French"]
+    [sample(.N, 1e6)]
+    [, .(prediction_label, abs_acc_pred_error, user_id, fact_id)]
+  )
+  
+  m_acc_pred_error_gl <- lmer(abs_acc_pred_error ~ prediction_label + 
+                               (1 | user_id) + (1 | fact_id),
+                             data = pred_gl_reg,
+                             control = lmerControl(optimizer ="bobyqa"))
+    
+  save(m_acc_pred_error_gl, file = m_acc_pred_error_gl_file)
+}
+
+summary(m_acc_pred_error_gl)
+```
+
+Compare different prediction types to each other:
+```{r}
+ht_acc_gl <- glht(m_acc_pred_error_gl, linfct = mcp(prediction_label = "Tukey"))
+summary(ht_acc_gl)
+```
+
+Inspect the model's residuals:
+```{r}
+qqnorm(resid(m_acc_pred_error_gl))
+qqline(resid(m_acc_pred_error_gl), col = "red")
+```
+
+```{r}
+plot(m_acc_pred_error_gl)
+```
+
+##### English
+
+```{r}
+m_acc_pred_error_ss_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Stepping_Stones.rda")
+
+if (file.exists(m_acc_pred_error_ss_file)) {
+  load(m_acc_pred_error_ss_file)
+} else {
+  
+  pred_ss_reg <- (
+    pred_acc_error
+    [course == "English"]
+    [sample(.N, 1e6)]
+    [, .(prediction_label, abs_acc_pred_error, user_id, fact_id)]
+  )
+  
+  m_acc_pred_error_ss <- lmer(abs_acc_pred_error ~ prediction_label + 
+                               (1 | user_id) + (1 | fact_id),
+                             data = pred_ss_reg,
+                             control = lmerControl(optimizer ="bobyqa")
+  )
+  
+  save(m_acc_pred_error_ss, file = m_acc_pred_error_ss_file)
+}
+
+summary(m_acc_pred_error_ss)
+```
+
+Compare different prediction types to each other:
+```{r}
+ht_acc_ss <- glht(m_acc_pred_error_ss, linfct = mcp(prediction_label = "Tukey"))
+summary(ht_acc_ss)
+```
+
+Inspect the model's residuals:
+```{r}
+qqnorm(resid(m_acc_pred_error_ss))
+qqline(resid(m_acc_pred_error_ss), col = "red")
+```
+
+```{r}
+plot(m_acc_pred_error_ss)
+```
+
+##### Comparison
+
+```{r}
+ht_acc_gl_tidy <- broom::tidy(confint(ht_acc_gl))
+ht_acc_ss_tidy <- broom::tidy(confint(ht_acc_ss))
+setDT(ht_acc_gl_tidy)
+setDT(ht_acc_ss_tidy)
+
+ht_acc_both_tidy <- rbind(ht_acc_gl_tidy[, course := "French"],
+                      ht_acc_ss_tidy[, course := "English"])
+```
+
+```{r}
+p_acc_pred_error_comp <- ggplot(ht_acc_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+  geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
+  geom_errorbar(width = 0.1) + 
+  geom_point() +
+  labs(x = "Linear hypotheses",
+       y = "Estimate",
+       caption = "Tukey's range test. Error bars show 95% family-wise confidence level.",
+       colour = "Course") +
+  coord_flip()
+
+p_acc_pred_error_comp
+
+ggsave(plot = p_acc_pred_error_comp, file.path("..", "output", "acc_prediction_error_comparisons.png"),
+       device = "png", width = 7.5, height = 5)
+
+rm(p_acc_pred_error_comp)
+```
+
+
+##### Summary plot
+
+```{r}
+pred_acc_error_avg[, prediction_rank := frank(-mae), by = .(course)]
+
+annotation_df_ss <- data.table(
+  course = rep("English", 10),
+  start = c(1, 1, 1, 1,
+            2, 2, 2,
+            3, 3,
+            4
+  ),
+  end = c(2, 3, 4, 5,
+          3, 4, 5,
+          4, 5,
+          5
+  ),
+  y = seq(max(pred_acc_error_avg$mae)*1.01 + .01125, max(pred_acc_error_avg$mae)*1.01, by = -.00125),
+  label = c("p < .001", "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001",
+            "p < .001")
+)
+
+annotation_df_gl <- data.table(
+  course = rep("French", 10),
+  start = c(1, 1, 1, 1,
+            2, 2, 2,
+            3, 3,
+            4
+  ),
+  end = c(2, 3, 4, 5,
+          3, 4, 5,
+          4, 5,
+          5
+  ),
+  y = seq(max(pred_acc_error_avg$mae)*1.01 + .01125, max(pred_acc_error_avg$mae)*1.01, by = -.00125),
+  label = c("p < .001", "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001",
+            "p < .001")
+)
+
+annotation_df_acc <- rbind(annotation_df_ss, annotation_df_gl)
+annotation_df_acc[, label := factor(label, levels = c("p < .001", "p < .01", "p < .05", "n.s."))]
+
+p_acc_pred_error_summary <- ggplot(pred_acc_error_avg, aes(x = prediction_rank, y = mae)) +
+  facet_grid(~ course) +
+  geom_line(data = annotation_df_acc,
+            aes(x = 1, y = .45, lty = label, alpha = label, colour = NULL)) + # Dummy line to get legend
+  geom_line(aes(colour = course, group = course)) +
+  geom_errorbar(aes(ymin = mae - ae_se, ymax = mae + ae_se), width = 0) +
+  geom_point(aes(colour = course, group = course)) +
+  geom_label(aes(label = prediction_label), 
+             colour = "black", 
+             alpha = .9,
+             label.size = NA, 
+             nudge_y = -.004) +
+  labs(x = NULL,
+       y = "Absolute prediction error:\nresponse accuracy",
+       colour = "Course") +
+  scale_x_continuous(expand = expansion(add = .75), breaks = NULL) +
+  scale_colour_manual(values = dataset_colours) +
+  scale_linetype_manual(values = c("p < .001" = 1,
+                                   "p < .01" = 5,
+                                   "p < .05" = 2,
+                                   "n.s." = 3),
+                        name = "Pairwise comparison:") +
+  scale_alpha_manual(values = c("p < .001" = 1,
+                                "p < .01" = .75,
+                                "p < .05" = .5, 
+                                "n.s." = .25), 
+                     name = "Pairwise comparison:") +
+  guides(colour = "none") +
+  ggsignif::geom_signif(data = annotation_df_acc,
+                        aes(xmin = start, xmax = end, annotations = "", 
+                            y_position = y, lty = label, alpha = label),
+                        tip_length = 0,
+                        manual = TRUE)  +
+  theme(legend.position = "bottom",
+        legend.justification = "right")
+
+p_acc_pred_error_summary
+
+ggsave(file.path("..", "output", "acc_absolute_prediction_error_summary.png"),
+       device = "png", width = 10, height = 4)
+```
+
+##### Improvement
+
+How big was the improvement from worst to best prediction method?
+
+French:
+```{r}
+# Absolute change
+ht_acc_gl_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+
+# % change
+scales::percent(
+  ht_acc_gl_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_gl)[[1]],
+  accuracy = .1)
+```
+
+English:
+```{r}
+# Absolute change
+ht_acc_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+
+# % change
+scales::percent(
+  ht_acc_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_ss)[[1]],
+  accuracy = .1)
+```
+
+
+# Combined plot
+
+```{r}
+(p_acc_pred_error_summary + p_rt_pred_error_summary) + 
+  plot_layout(ncol = 1, guides = "collect") +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+
+ggsave(file.path("..", "output", "beh_absolute_prediction_error_summary.png"),
+       device = "png", width = 10, height = 8)
+```
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```

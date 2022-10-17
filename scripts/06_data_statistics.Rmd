@@ -1,0 +1,238 @@
+---
+title: "Data statistics"
+author: "Maarten van der Velde"
+date: "Last updated: `r Sys.Date()`"
+output:
+  html_notebook:
+    smart: no
+    toc: yes
+    toc_float: yes
+  github_document:
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Overview
+
+This notebook calculates some useful statistics about the data set.
+
+
+# Setup
+```{r}
+library(data.table)
+library(fst)
+library(ggplot2)
+library(stringr)
+
+library(wesanderson)
+
+
+theme_set(theme_light(base_size = 14) +
+            theme(strip.text = element_text(colour = "black")))
+
+condition_colours <- wes_palette("Darjeeling1", n = 5)
+condition_colours[c(2, 4, 5)] <- condition_colours[c(4, 5, 2)]
+
+# Model priors
+mu_0 <- 0.3 # mean (b)
+kappa_0 <- 1 # number of observations/precision (c)
+a_0 <- 3 # shape of Gamma (g)
+b_0 <- 0.2 # rate of Gamma (h)
+```
+
+
+```{r}
+courses <- c("Grandes Lignes", "Stepping Stones")
+```
+
+
+# Filtering
+
+How much data was discarded due to filtering?
+```{r}
+dat_rof <- data.table()
+dat_train <- data.table()
+dat_test <- data.table()
+
+for (course in courses) {
+  
+  rof <- read_fst(file.path("..", "data", paste0("rate_of_forgetting_", str_replace_all(course, " ", "_"), ".fst")))
+  setDT(rof)
+  dat_rof <- rbind(dat_rof, rof[, course := ifelse(course == "Grandes Lignes", "French", "English")])
+  
+  rof_sub_train <- read_fst(file.path("..", "data", paste0("training_", str_replace_all(course, " ", "_"), ".fst")))
+  rof_sub_test <- read_fst(file.path("..", "data", paste0("testing_", str_replace_all(course, " ", "_"), ".fst")))
+  
+  setDT(rof_sub_train)
+  setDT(rof_sub_test)
+
+  rof_sub_train[, course := ifelse(course == "Grandes Lignes", "French", "English")]
+  rof_sub_test[, course := ifelse(course == "Grandes Lignes", "French", "English")]
+  
+  dat_train <- rbind(dat_train, rof_sub_train)
+  dat_test <- rbind(dat_test, rof_sub_test)
+  
+}
+```
+
+How many trials do we start with?
+```{r}
+dat_rof[, .(trials = scales::comma(sum(n_reps))), by = .(course)]
+```
+
+
+```{r}
+dat_rof[, under := n_reps < 3, by = .(user_id, fact_id)]
+dat_rof[, over := n_reps > 25, by = .(user_id, fact_id)]
+
+dat_rof[, .(n_under = scales::comma(sum(n_reps[under == TRUE])), n_over = scales::comma(sum(n_reps[over == TRUE]))), by = .(course)]
+```
+
+How many trials are removed?
+```{r}
+dat_rof[under | over, .(trials = scales::comma(sum(n_reps))), by = .(course)]
+```
+
+
+What are we left with?
+```{r}
+dat_rof[!under & !over, .(trials = scales::comma(sum(n_reps))), by = .(course)]
+```
+
+
+
+
+### Number of trials per sequence
+
+We only included sequences consisting of at least 3 trials and at most 25 trials.
+
+```{r}
+seq_trials <- rbind(dat_train[, .(n_reps, course, set = "Training set")], dat_test[, .(n_reps, course, set = "Test set")])
+```
+
+```{r}
+ggplot(seq_trials, aes(x = n_reps)) +
+  facet_grid(course ~ .) +
+  geom_histogram(aes(y = ..count.. / sum(..count..)), binwidth = 1, fill = "grey70", colour = "black") +
+  geom_boxplot(width = .05, outlier.shape = NA, position = position_nudge(y = -.05)) +
+  geom_vline(data = NULL, xintercept = c(3, 25), lty = 2) +
+  scale_x_continuous() +
+  coord_cartesian(xlim = c(0, 25)) +
+  labs(x = "Number of trials per learning sequence",
+       y = NULL) +
+  guides(fill = "none") +
+  theme(axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+```
+
+```{r}
+seq_trials[, .(median = median(n_reps), mean = mean(n_reps)), by = .(course)]
+```
+
+# Number of sequences per prediction
+
+```{r}
+pred_stats <- data.table()
+
+for (course in courses) {
+
+  fact_pred <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_fact_", str_replace_all(course, " ", "_"), ".fst")))
+  setDT(fact_pred)
+  
+  user_pred <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_user_", str_replace_all(course, " ", "_"), ".fst"))) 
+  setDT(user_pred)
+  
+  setnames(fact_pred, c("fact_id", "pred_fact"), c("id", "pred"))
+  fact_pred[, type := "Fact"]
+  fact_pred <- unique(fact_pred[, .(id, n_train_obs, type)])
+  
+  setnames(user_pred, c("user_id", "pred_user"), c("id", "pred"))
+  user_pred[, type := "Learner"]
+  user_pred <- unique(user_pred[, .(id, n_train_obs, type)])
+  
+  pred_stats_course <- rbind(fact_pred, user_pred)
+  pred_stats_course[, course := ifelse(course == "Grandes Lignes", "French", "English")]
+  
+  pred_stats <- rbind(pred_stats, pred_stats_course)
+}
+```
+
+```{r}
+ggplot(pred_stats, aes(x = n_train_obs)) +
+  facet_grid(type ~ course) +
+  geom_density(aes(fill = type, colour = type), alpha = .5) +
+  geom_boxplot(aes(fill = type), width = .2, position = position_nudge(y = -.0), outlier.shape = NA) +
+  geom_vline(data = NULL, xintercept = 30, lty = 2) +
+  scale_x_log10() +
+  annotation_logticks(sides = "b", outside = T) +
+  scale_fill_manual(values = condition_colours[c(3,4)]) +
+  scale_colour_manual(values = condition_colours[c(3,4)]) +
+  labs(x = "Number of sequences used in prediction\n(logarithmic scale)",
+       y = NULL) +
+  guides(fill = "none",
+         colour = "none") +
+  coord_cartesian(clip = "off") +
+  theme(axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(vjust = 0))
+
+ggsave(file.path("..", "output", "sequences_per_prediction.png"),
+       device = "png", width = 10, height = 4)
+
+```
+
+```{r}
+pred_stats[, .(q_25 = quantile(n_train_obs, .25), 
+               q_50 = quantile(n_train_obs, .5),
+               q_75 = quantile(n_train_obs, .75), 
+               mean = mean(n_train_obs)),
+           by = .(course, type)]
+
+```
+
+Does the number of sequences that went into a prediction affect the maggnitude of the prediction error?
+
+```{r}
+pred_v_obs_fact <- data.table()
+pred_v_obs_user <- data.table()
+
+for (course in courses) {
+  
+  pred_fact <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_fact_", str_replace_all(course, " ", "_"), ".fst")))
+  pred_user <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_user_", str_replace_all(course, " ", "_"), ".fst")))
+  setDT(pred_fact)
+  setDT(pred_user)
+  
+  pred_v_obs_fact <- rbind(pred_v_obs_fact, pred_fact[, course := ifelse(course == "Grandes Lignes", "French", "English")])
+  pred_v_obs_user <- rbind(pred_v_obs_user, pred_user[, course := ifelse(course == "Grandes Lignes", "French", "English")])
+}
+
+pred_v_obs_fact <- pred_v_obs_fact[!is.na(alpha)]
+pred_v_obs_fact <- unique(pred_v_obs_fact)
+
+pred_v_obs_user <- pred_v_obs_user[!is.na(alpha)]
+pred_v_obs_user <- unique(pred_v_obs_user)
+```
+
+The correlation between the number of training observations and the absolute prediction error is practically zero (though statistically significant due to the size of the data):
+```{r}
+pred_v_obs_fact[, cor.test(n_train_obs, abs(alpha - pred_fact)), by = .(course)]
+pred_v_obs_user[, cor.test(n_train_obs, abs(alpha - pred_user)), by = .(course)]
+```
+
+Are there just diminishing returns? Then we might see a stronger correlation on the lower end of the scale.
+But zooming in on predictions based on 30 (the minimum) to 100 observations, we still get correlations close to zero:
+```{r}
+pred_v_obs_fact[n_train_obs <= 100, cor.test(n_train_obs, abs(alpha - pred_fact)), by = .(course)]
+pred_v_obs_user[n_train_obs <= 100, cor.test(n_train_obs, abs(alpha - pred_user)), by = .(course)]
+```
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```

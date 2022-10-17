@@ -1,0 +1,743 @@
+---
+title: "Evaluate rate of forgetting predictions"
+author: "Maarten van der Velde"
+date: "Last updated: `r Sys.Date()`"
+output:
+  html_notebook:
+    smart: no
+    toc: yes
+    toc_float: yes
+  github_document:
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+# Overview
+
+This notebook evaluates the predicted rates of forgetting.
+The predictions are compared to the value derived at the end of each learning session to determine their accuracy.
+
+
+# Setup
+
+```{r}
+library(fst)
+library(data.table)
+library(tidyr)
+library(purrr)
+library(furrr)
+library(stringr)
+library(ggplot2)
+library(wesanderson)
+library(lme4)
+library(lmerTest)
+library(multcomp)
+```
+
+```{r}
+source(file.path("..", "scripts", "99_slimstampen_model_funs.R"))
+```
+
+```{r}
+future::plan("multiprocess", workers = 6) # Set to desired number of cores
+```
+
+```{r}
+theme_set(theme_light(base_size = 14) +
+            theme(strip.text = element_text(colour = "black")))
+
+condition_colours <- wes_palette("Darjeeling1", n = 5)
+condition_colours[c(2, 4, 5)] <- condition_colours[c(4, 5, 2)]
+
+dataset_colours <- wes_palette("Darjeeling2", n = 5)[c(2, 3)]
+```
+
+
+## Helper functions
+
+```{r}
+load_predictions <- function(course) {
+  
+  pred_user <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_user_", str_replace_all(course, " ", "_"), ".fst")))
+  pred_fact <- read_fst(file.path("..", "data", "predictions", paste0("pred_v_obs_fact_", str_replace_all(course, " ", "_"), ".fst")))
+  pred_fact_user <- read_fst(file.path("..", "data", "predictions", paste0("pred_fact_and_user_", str_replace_all(course, " ", "_"), ".fst")))
+  setDT(pred_user)
+  setDT(pred_fact)
+  setDT(pred_fact_user)
+  
+  pred_domain <- mean(unique(pred_fact, by = c("fact_id"))$pred_fact)
+  pred_default <- 0.3
+  
+  # Combine
+  pred_all <- merge(pred_user, pred_fact, by = c("user_id", "fact_id", "alpha", "n_reps"), all = TRUE)
+  pred_all <- merge(pred_all, pred_fact_user, by = c("user_id", "fact_id", "alpha"), all = TRUE)
+  pred_all[, pred_default := pred_default]
+  pred_all[, pred_domain := pred_domain]
+  
+  pred_obs_long <- pivot_longer(pred_all, 
+                                cols = pred_user:pred_domain,
+                                names_to = "prediction_type",
+                                names_prefix = "pred\\_")
+  
+  setDT(pred_obs_long)
+  
+  # Remove NA predictions and predictions without corresponding observations
+  pred_obs_long <- pred_obs_long[!is.na(value)]
+  pred_obs_long <- pred_obs_long[!is.na(alpha)]
+  
+  # Remove duplicates
+  pred_obs_long <- unique(pred_obs_long)
+  
+  # Set proper labels
+  condition_labels <- data.table(prediction_type = c("default", "domain", "fact", "user", "fact_user"),
+                                 prediction_label = factor(c("Default", "Domain", "Fact", "Learner", "Fact & Learner"),
+                                                           levels = c("Default", "Domain", "Fact", "Learner", "Fact & Learner")))
+  pred_obs_long <- pred_obs_long[condition_labels, on = .(prediction_type)]
+  
+  return(pred_obs_long)
+}
+```
+
+
+
+# Rate of forgetting
+
+## Predicted rate of forgetting
+```{r}
+pred_gl <- load_predictions("Grandes Lignes")
+pred_ss <- load_predictions("Stepping Stones")
+
+pred_both <- rbind(pred_gl[, course := "French"],
+                   pred_ss[, course := "English"])
+```
+
+### Distribution of predictions
+```{r }
+p_rof_dist <- ggplot(pred_both, aes(x = value, fill = prediction_label)) +
+  facet_grid(prediction_label ~ course, scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .01) +
+  guides(fill = "none") +
+  labs(x = "Predicted rate of forgetting",
+       y = "Density") +
+  scale_fill_manual(values = condition_colours)
+
+p_rof_dist
+
+ggsave(plot = p_rof_dist, file.path("..", "output", "rof_predictions_distribution.png"),
+       device = "png", width = 5, height = 7.5)
+```
+
+### Predicted vs. observed values
+
+We compare the predicted rate of forgetting to the "observed" rate of forgetting, i.e., the rate of forgetting that was estimated at the end of the learning sequence.
+
+To assess the accuracy of predictions, we compute the mean absolute error (MAE) as an aggregate statistic, as well as the absolute error (AE) of each individual prediction.
+
+```{r}
+pred_mae <- pred_both[, .(mae = mean(abs(alpha - value)),
+                          ae_se = sd(abs(alpha - value))/.N), 
+                      by = .(course, prediction_label)]
+
+  
+n_obs <- pred_both[, .N, by = .(course, prediction_label)]
+```
+
+Plot predicted vs. observed values:
+```{r }
+rof_min <- 0
+rof_max <- 1
+rof_breaks <- seq(0.1, 0.9, by = .2)
+
+p_rof_pred_v_obs <- ggplot(pred_both,
+                         aes(x = value, y = alpha, colour = prediction_label)) +
+    facet_grid(course ~ prediction_label) +
+    geom_hline(yintercept = 0.3, lty = 2) +
+    geom_vline(xintercept = 0.3, lty = 2) +
+    geom_abline(slope = 1, intercept = 0, lty = 3, alpha = 0.75) +
+    geom_point(alpha = .1, size = .1, pch = ".") +
+    geom_smooth(method = "lm", formula = y ~ x, colour = "black") +
+  geom_label(data = pred_mae,
+             aes(label = paste("MAE =", formatC(mae, digits = 3, flag = "#"))),
+             x = rof_max, y = rof_min,
+             hjust = 1, colour = "NA", size = 3,
+             alpha = .9,
+             label.size = NA) +
+  geom_text(data = pred_mae,
+            aes(label = paste("MAE =", formatC(mae, digits = 3, flag = "#"))),
+            x = rof_max, y = rof_min,
+            hjust = 1, colour = "black", size = 3) +
+  geom_label(data = n_obs,
+             aes(label = paste("n =", scales::comma(N))),
+             x = rof_max,
+             y = rof_max,
+             hjust = 1, colour = "NA", size = 3,
+             alpha = .9,
+             label.size = NA) +
+  geom_text(data = n_obs,
+            aes(label = paste("n =", scales::comma(N))),
+            x = rof_max,
+            y = rof_max,
+            hjust = 1, colour = "black", size = 3) +
+  guides(colour = "none") +
+  labs(x = "Predicted rate of forgetting",
+       y = "Observed rate of forgetting") +
+  coord_fixed(ratio = 1, xlim = c(rof_min, rof_max), ylim = c(rof_min, rof_max)) +
+  scale_x_continuous(breaks = rof_breaks) +
+  scale_y_continuous(breaks = rof_breaks) +
+  scale_colour_manual(values = condition_colours)
+
+p_rof_pred_v_obs
+
+ggsave(plot = p_rof_pred_v_obs, file.path("..", "output", "rof_predicted_vs_observed.png"),
+  device = "png", width = 10, height = 4.5)
+
+rm(p_rof_pred_v_obs)
+```
+
+### Prediction error
+
+Calculate prediction error:
+```{r}
+pred_both[, prediction_error := value - alpha]
+```
+
+Distribution of prediction error:
+```{r }
+p_rof_pred_error <- ggplot(pred_both, aes(x = prediction_error, fill = prediction_label)) +
+  facet_grid(prediction_label ~ course, scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .01) +
+  guides(fill = "none") +
+  labs(x = "ROF prediction error (predicted - observed)",
+       y = "Density") +
+  scale_fill_manual(values = condition_colours)
+
+p_rof_pred_error
+
+ggsave(plot = p_rof_pred_error, file.path("..", "output", "rof_prediction_error.png"),
+       device = "png", width = 5, height = 7.5)
+```
+
+
+#### Absolute prediction error
+
+To compare the magnitude of prediction errors between prediction methods, we look at absolute prediction error.
+
+```{r}
+pred_both[, abs_prediction_error := abs(prediction_error)]
+```
+
+Distribution of absolute prediction error:
+```{r }
+p_rof_abs_pred_error <- ggplot(pred_both, aes(x = abs_prediction_error, fill = prediction_label)) +
+  facet_grid(prediction_label ~ course, scales = "free_y") +
+  geom_histogram(aes(y = ..density..), binwidth = .01) +
+  guides(fill = "none") +
+  labs(x = "Absolute ROF prediction error",
+       y = "Density") +
+  scale_fill_manual(values = condition_colours)
+
+p_rof_abs_pred_error
+
+ggsave(plot = p_rof_abs_pred_error, file.path("..", "output", "rof_absolute_prediction_error.png"),
+       device = "png", width = 5, height = 7.5)
+```
+
+```{r}
+pred_error_summarised <- pred_both[, .(error_mean = mean(abs_prediction_error), error_se = sd(abs_prediction_error)/.N), by = .(course, prediction_label)]
+
+ggplot(pred_error_summarised, aes(x = prediction_label, y = error_mean, colour = course)) +
+  geom_boxplot(data = pred_both,
+               aes(y = abs_prediction_error, group = interaction(course, prediction_label)),
+               colour = "grey70",
+               width = .25,
+               outlier.shape = NA,
+               position = position_dodge(width = .5)) +
+  geom_errorbar(aes(ymin = error_mean - error_se, ymax = error_mean + error_se), width = 0, position = position_dodge(width = .5)) +
+  geom_point(position = position_dodge(width = .5)) +
+  coord_cartesian(ylim = c(0, 0.175)) +
+  labs(x = "Method",
+       y = "Absolute rate of forgetting prediction error",
+       colour = "Course")
+```
+
+
+
+
+Fit a regression model on absolute prediction error.
+The whole data set is too big to fit in a reasonable time, so we fit the model to a random subset of 1M predictions (which already takes ~24hrs). 
+
+##### Grandes Lignes
+```{r}
+m_rof_pred_error_gl_file <- file.path("..", "data", "model_fits", "m_pred_error_Grandes_Lignes_1e6.rda")
+
+if (file.exists(m_rof_pred_error_gl_file)) {
+  load(m_rof_pred_error_gl_file)
+} else {
+  
+  pred_gl_reg <- (
+    pred_both
+    [course == "French"]
+    [sample(.N, 1e6), .(prediction_label, abs_prediction_error, user_id, fact_id)]
+  )
+  
+  m_rof_pred_error_gl <- lmer(abs_prediction_error ~ prediction_label + 
+                                (1 | user_id) + (1 | fact_id),
+                              data = pred_gl_reg)
+  
+  save(m_rof_pred_error_gl, file = m_rof_pred_error_gl_file)
+}
+
+summary(m_rof_pred_error_gl)
+```
+
+Compare different prediction types to each other:
+```{r}
+ht_gl <- glht(m_rof_pred_error_gl, linfct = mcp(prediction_label = "Tukey"))
+summary(ht_gl)
+```
+
+Inspect the model's residuals:
+```{r}
+qqnorm(resid(m_rof_pred_error_gl))
+qqline(resid(m_rof_pred_error_gl), col = "red")
+```
+
+```{r}
+plot(m_rof_pred_error_gl)
+```
+
+
+The QQ plot indicates quite a strong skew, which is not surprising, given that the distribution of absolute error is bounded by zero on the left but unbounded on the right.
+Assuming a Gamma distribution may be better, but models that use a Gamma distribution do not converge here.
+The LMER also gives a sufficiently accurate estimate of the means.
+
+
+
+##### Stepping Stones
+
+```{r}
+m_rof_pred_error_ss_file <- file.path("..", "data", "model_fits", "m_pred_error_Stepping_Stones_1e6.rda")
+
+if (file.exists(m_rof_pred_error_ss_file)) {
+  load(m_rof_pred_error_ss_file)
+} else {
+  
+  pred_ss_reg <- (
+    pred_both
+    [course == "English"]
+    [sample(.N, 1e6), .(prediction_label, abs_prediction_error, user_id, fact_id)]
+  )
+  
+  m_pred_error <- lmer(abs_prediction_error ~ prediction_label + 
+                         (1 | user_id) + (1 | fact_id),
+                       data = pred_ss_reg)
+  
+  save(m_pred_error, file = m_rof_pred_error_ss_file)
+}
+
+summary(m_pred_error)
+```
+
+Compare different prediction types to each other:
+```{r}
+ht_ss <- glht(m_pred_error, linfct = mcp(prediction_label = "Tukey"))
+summary(ht_ss)
+```
+
+Inspect the model's residuals:
+```{r}
+qqnorm(resid(m_pred_error))
+qqline(resid(m_pred_error), col = "red")
+```
+
+
+##### Comparison
+```{r}
+ht_gl_tidy <- broom::tidy(confint(ht_gl))
+ht_ss_tidy <- broom::tidy(confint(ht_ss))
+setDT(ht_gl_tidy)
+setDT(ht_ss_tidy)
+
+ht_both_tidy <- rbind(ht_gl_tidy[, course := "French"],
+                      ht_ss_tidy[, course := "English"])
+```
+
+```{r}
+p_rof_pred_error_comp <- ggplot(ht_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+  geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
+  geom_errorbar(width = 0.1) + 
+  geom_point() +
+  labs(x = "Linear hypotheses",
+       y = "Estimate",
+       caption = "Tukey's range test. Error bars show 95% family-wise confidence level.",
+       colour = "Course") +
+    coord_flip()
+
+p_rof_pred_error_comp
+
+ggsave(plot = p_rof_pred_error_comp, file.path("..", "output", "rof_prediction_error_comparisons.png"),
+       device = "png", width = 7.5, height = 5)
+
+```
+
+##### Summary plot
+
+```{r}
+# Set significance level of comparisons manually, based on model output
+pred_error_summarised$comparison <- c("***")
+pred_error_summarised[c(3, 8), comparison := NA]
+pred_error_summarised[c(5, 10), comparison := "n.s."]
+
+# Add fitted values
+pred_error_summarised[course == "French", error_fitted := predict(m_rof_pred_error_gl,
+                                                newdata = pred_error_summarised[course == "French"],
+                                                re.form = NA, 
+                                                type = "response")]
+pred_error_summarised[course == "English", error_fitted := predict(m_pred_error,
+                                                newdata = pred_error_summarised[course == "English"],
+                                                re.form = NA, 
+                                                type = "response")]
+
+p_rof_abs_pred_error_summ <- ggplot(pred_error_summarised, aes(x = reorder(prediction_label, -error_mean), y = error_mean, colour = course)) +
+  geom_errorbar(aes(ymin = error_mean - error_se, ymax = error_mean + error_se), width = 0) +
+  geom_line(aes(group = course), lty = 2) +
+  geom_point() +
+  geom_text(aes(label = comparison), 
+            colour = "black",
+            position = position_nudge(x = .5, y = c(rep(0, 9), .001)),
+            hjust = .5) +
+  labs(x = "Method",
+       y = "Absolute rate of forgetting prediction error",
+       colour = "Course") +
+  scale_colour_manual(values = dataset_colours) +
+  theme(legend.position = c(.85, .85))
+
+p_rof_abs_pred_error_summ
+
+ggsave(plot = p_rof_abs_pred_error_summ, file.path("..", "output", "rof_absolute_prediction_error_summary.png"),
+       device = "png", width = 7.5, height = 4.5)
+```
+
+
+```{r}
+pred_error_summarised[, prediction_rank := frank(-error_mean), by = .(course)]
+
+annotation_df_ss <- data.table(
+  course = rep("English", 10),
+  start = c(1, 1, 1, 1,
+            2, 2, 2,
+            3, 3,
+            4
+  ),
+  end = c(2, 3, 4, 5,
+          3, 4, 5,
+          4, 5,
+          5
+  ),
+  y = seq(max(pred_error_summarised$error_mean)*1.01 + .00675, max(pred_error_summarised$error_mean)*1.01, by = -.00075),
+  label = c("p < .001", "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001",
+            "n.s.")
+)
+
+annotation_df_gl <- data.table(
+  course = rep("French", 10),
+  start = c(1, 1, 1, 1,
+            2, 2, 2,
+            3, 3,
+            4
+  ),
+  end = c(2, 3, 4, 5,
+          3, 4, 5,
+          4, 5,
+          5
+  ),
+  y = seq(max(pred_error_summarised$error_mean)*1.01 + .00675, max(pred_error_summarised$error_mean)*1.01, by = -.00075),
+  label = c("p < .001", "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001", "p < .001",
+            "p < .001", "p < .001",
+            "n.s.")
+)
+
+annotation_df_rof <- rbind(annotation_df_ss, annotation_df_gl)
+annotation_df_rof[, label := factor(label, levels = c("p < .001", "p < .01", "p < .05", "n.s."))]
+
+p_rof_pred_error_summary <- ggplot(pred_error_summarised, aes(x = prediction_rank, y = error_mean)) +
+  facet_grid(~ course) +
+  geom_line(data = annotation_df_rof,
+            aes(x = 1, y = .05, lty = label, alpha = label, colour = NULL)) + # Dummy line to get legend
+  geom_line(aes(colour = course, group = course)) +
+  geom_errorbar(aes(ymin = error_mean - error_se, ymax = error_mean + error_se), width = 0) +
+  geom_point(aes(colour = course, group = course)) +
+  geom_label(aes(label = prediction_label), 
+             colour = "black", 
+             alpha = .9,
+             label.size = NA, 
+             nudge_y = -.0025) +
+  labs(x = NULL,
+       y = "Absolute prediction error:\nrate of forgetting",
+       colour = "Course") +
+  scale_x_continuous(expand = expansion(add = .75), breaks = NULL) +
+  scale_colour_manual(values = dataset_colours) +
+  scale_linetype_manual(values = c("p < .001" = 1,
+                                   "p < .01" = 5,
+                                   "p < .05" = 2,
+                                   "n.s." = 3),
+                        name = "Pairwise comparison:") +
+  scale_alpha_manual(values = c("p < .001" = 1,
+                                "p < .01" = .75,
+                                "p < .05" = .5, 
+                                "n.s." = .25), 
+                     name = "Pairwise comparison:") +
+  guides(colour = "none") +
+  ggsignif::geom_signif(data = annotation_df_rof,
+                        aes(xmin = start, xmax = end, annotations = "", 
+                            y_position = y, lty = label, alpha = label),
+                        tip_length = 0,
+                        manual = TRUE)  +
+  theme(legend.position = "bottom",
+        legend.justification = "right")
+
+p_rof_pred_error_summary
+
+ggsave(file.path("..", "output", "rof_absolute_prediction_error_summary.png"),
+       device = "png", width = 10, height = 4)
+```
+
+#### Improvement
+
+How big was the improvement from worst to best prediction method?
+
+French:
+```{r}
+# Absolute change
+ht_gl_tidy[lhs == "Fact - Default", estimate[1]]
+
+# % change
+scales::percent(
+  ht_gl_tidy[lhs == "Fact - Default", estimate[1]] / fixef(m_rof_pred_error_gl)[[1]],
+  accuracy = .1)
+```
+
+English:
+```{r}
+# Absolute change
+ht_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+
+# % change
+scales::percent(
+  ht_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_pred_error)[[1]],
+  accuracy = .1)
+```
+
+
+
+### Visualise prediction error
+
+#### By learner
+
+```{r}
+user_freq <- pred_both[, .N, by = .(course, prediction_label, user_id)]
+
+pred_user_freq <- pred_both[user_freq[N > 50], on = .(course, prediction_label, user_id)]
+
+pred_user_q <- pred_user_freq[, .(stat = c("whisker_low", "q25", "median", "q75", "whisker_high"),
+                                  value = boxplot.stats(prediction_error, do.conf = FALSE, do.out = FALSE)$stats), by = .(course, prediction_label, user_id)]
+
+pred_user_q <- pivot_wider(pred_user_q, names_from = "stat", values_from = "value")
+
+pred_user_q <- pred_user_q %>%
+  arrange(course, prediction_label, median) %>%
+  group_by(course, prediction_label) %>%
+  mutate(user_order = (1:n())/n())
+```
+
+```{r}
+ggplot(pred_user_q, aes(x = user_order)) +
+  facet_grid(course ~ prediction_label) +
+  geom_ribbon(aes(ymin = whisker_low, ymax = whisker_high, fill = course), alpha = .3) +
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = course), alpha = .5) +
+  geom_line(aes(y = median), lwd = 1) +
+  geom_hline(data = NULL, yintercept = 0, lty = 3) +
+    labs(x = "Learners",
+       y = "Rate of forgetting prediction error\n(predicted - observed)") +
+  scale_fill_manual(values = dataset_colours) +
+  guides(fill = "none") +
+  theme(axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()) +
+  NULL
+
+ggsave(file.path("..", "output", "rof_prediction_error_by_learner.png"),
+  device = "png", width = 10, height = 4.5)
+```
+
+Absolute error:
+```{r}
+pred_user_q <- pred_user_freq[, .(stat = c("whisker_low", "q25", "median", "q75", "whisker_high"),
+                                  value = boxplot.stats(abs_prediction_error, do.conf = FALSE, do.out = FALSE)$stats), by = .(course, prediction_label, user_id)]
+
+pred_user_q <- pivot_wider(pred_user_q, names_from = "stat", values_from = "value")
+
+pred_user_q <- pred_user_q %>%
+  arrange(course, prediction_label, median) %>%
+  group_by(course, prediction_label) %>%
+  mutate(user_order = (1:n())/n())
+
+ggplot(pred_user_q, aes(x = user_order)) +
+  facet_grid(course ~ prediction_label) +
+  geom_ribbon(aes(ymin = whisker_low, ymax = whisker_high, fill = course), alpha = .3) +
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = course), alpha = .5) +
+  geom_line(aes(y = median), lwd = 1) +
+    labs(x = "Learners",
+       y = "Absolute rate of forgetting prediction error") +
+  scale_fill_manual(values = dataset_colours) +
+  guides(fill = "none") +
+  theme(axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()) +
+  NULL
+
+ggsave(file.path("..", "output", "rof_abs_prediction_error_by_learner.png"),
+  device = "png", width = 10, height = 4.5)
+```
+
+```{r}
+ggplot(pred_user_q, aes(x = user_order, group = prediction_label, colour = prediction_label)) +
+  facet_grid(~ course) +
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = prediction_label), colour = NA, alpha = .15) +
+  geom_line(aes(y = median), lwd = 1) +
+    labs(x = "Learners",
+       y = "Absolute rate of forgetting prediction error",
+       colour = "Prediction\nmethod",
+       fill = "Prediction\nmethod") +
+  scale_colour_manual(values = condition_colours) +
+  scale_fill_manual(values = condition_colours) +
+  theme(axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()) +
+  NULL
+
+ggsave(file.path("..", "output", "rof_abs_prediction_error_by_learner_condensed.png"),
+  device = "png", width = 10, height = 4.5)
+```
+
+
+#### By fact
+```{r}
+fact_freq <- pred_both[, .N, by = .(course, prediction_label, fact_id)]
+
+pred_fact_freq <- pred_both[fact_freq[N > 50], on = .(course, prediction_label, fact_id)]
+
+pred_fact_q <- pred_fact_freq[, .(stat = c("whisker_low", "q25", "median", "q75", "whisker_high"),
+                                  value = boxplot.stats(prediction_error, do.conf = FALSE, do.out = FALSE)$stats), by = .(course, prediction_label, fact_id)]
+
+pred_fact_q <- pivot_wider(pred_fact_q, names_from = "stat", values_from = "value")
+
+pred_fact_q <- pred_fact_q %>%
+  arrange(course, prediction_label, median) %>%
+  group_by(course, prediction_label) %>%
+  mutate(fact_order = (1:n())/n())
+```
+
+```{r}
+ggplot(pred_fact_q, aes(x = fact_order)) +
+  facet_grid(course ~ prediction_label) +
+  geom_ribbon(aes(ymin = whisker_low, ymax = whisker_high, fill = course), alpha = .3) +
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = course), alpha = .5) +
+  geom_line(aes(y = median), lwd = 1) +
+  geom_hline(data = NULL, yintercept = 0, lty = 3) +
+    labs(x = "Facts",
+       y = "Rate of forgetting prediction error\n(predicted - observed)") +
+  scale_fill_manual(values = dataset_colours) +
+  guides(fill = "none") +
+  theme(axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()) +
+  NULL
+
+ggsave(file.path("..", "output", "rof_prediction_error_by_fact.png"),
+  device = "png", width = 10, height = 4.5)
+```
+
+Absolute error:
+```{r}
+pred_fact_q <- pred_fact_freq[, .(stat = c("whisker_low", "q25", "median", "q75", "whisker_high"),
+                                  value = boxplot.stats(abs_prediction_error, do.conf = FALSE, do.out = FALSE)$stats), by = .(course, prediction_label, fact_id)]
+
+pred_fact_q <- pivot_wider(pred_fact_q, names_from = "stat", values_from = "value")
+
+pred_fact_q <- pred_fact_q %>%
+  arrange(course, prediction_label, median) %>%
+  group_by(course, prediction_label) %>%
+  mutate(fact_order = (1:n())/n())
+
+ggplot(pred_fact_q, aes(x = fact_order)) +
+  facet_grid(course ~ prediction_label) +
+  geom_ribbon(aes(ymin = whisker_low, ymax = whisker_high, fill = course), alpha = .3) +
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = course), alpha = .5) +
+  geom_line(aes(y = median), lwd = 1) +
+    labs(x = "Facts",
+       y = "Absolute rate of forgetting prediction error") +
+  scale_fill_manual(values = dataset_colours) +
+  guides(fill = "none") +
+  theme(axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()) +
+  NULL
+
+ggsave(file.path("..", "output", "rof_abs_prediction_error_by_fact.png"),
+  device = "png", width = 10, height = 4.5)
+```
+
+```{r}
+ggplot(pred_fact_q, aes(x = fact_order, group = prediction_label, colour = prediction_label)) +
+  facet_grid(~ course) +
+  geom_ribbon(aes(ymin = q25, ymax = q75, fill = prediction_label), colour = NA, alpha = .15) +
+  geom_line(aes(y = median), lwd = 1) +
+    labs(x = "Facts",
+       y = "Absolute rate of forgetting prediction error",
+       colour = "Prediction\nmethod",
+       fill = "Prediction\nmethod") +
+  scale_colour_manual(values = condition_colours) +
+  scale_fill_manual(values = condition_colours) +
+  theme(axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()) +
+  NULL
+
+ggsave(file.path("..", "output", "rof_abs_prediction_error_by_fact_condensed.png"),
+  device = "png", width = 10, height = 4.5)
+```
+
+
+```{r}
+ggplot(pred_both, aes(x = abs_prediction_error, colour = prediction_label, fill = prediction_label)) +
+  facet_grid(~ course) +
+  geom_density(alpha = .1) +
+      labs(x = "Absolute rate of forgetting prediction error",
+       y = "Density",
+       colour = "Prediction\nmethod",
+       fill = "Prediction\nmethod") +
+  scale_colour_manual(values = condition_colours) +
+  scale_fill_manual(values = condition_colours) +
+  coord_cartesian(ylim = c(0, 100), xlim = c(0, .25)) +
+  NULL
+
+ggsave(file.path("..", "output", "rof_abs_prediction_error_density.png"),
+  device = "png", width = 10, height = 4.5)
+```
+
+
+
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+
