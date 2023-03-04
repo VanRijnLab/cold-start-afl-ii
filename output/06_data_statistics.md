@@ -1,14 +1,7 @@
 Data statistics
 ================
 Maarten van der Velde
-Last updated: 2022-10-17
-
--   [Overview](#overview)
--   [Setup](#setup)
--   [Filtering](#filtering)
-    -   [Number of trials per sequence](#number-of-trials-per-sequence)
--   [Number of sequences per prediction](#number-of-sequences-per-prediction)
--   [Session info](#session-info)
+Last updated: 2023-03-04
 
 # Overview
 
@@ -70,6 +63,10 @@ for (course in courses) {
   dat_test <- rbind(dat_test, rof_sub_test)
   
 }
+
+dat_rof <- unique(dat_rof)
+dat_train <- unique(dat_train)
+dat_test <- unique(dat_test)
 ```
 
 How many trials do we start with?
@@ -79,8 +76,8 @@ dat_rof[, .(trials = scales::comma(sum(n_reps))), by = .(course)]
 ```
 
     ##     course     trials
-    ## 1:  French 34,162,202
-    ## 2: English 80,853,765
+    ## 1:  French 34,158,787
+    ## 2: English 80,845,692
 
 ``` r
 dat_rof[, under := n_reps < 3, by = .(user_id, fact_id)]
@@ -90,32 +87,90 @@ dat_rof[, .(n_under = scales::comma(sum(n_reps[under == TRUE])), n_over = scales
 ```
 
     ##     course    n_under    n_over
-    ## 1:  French  2,394,753 1,588,757
-    ## 2: English 11,538,854 1,302,383
+    ## 1:  French  2,394,514 1,588,624
+    ## 2: English 11,537,654 1,302,150
 
-How many trials are removed?
+How many trials are
+removed?
 
 ``` r
 dat_rof[under | over, .(trials = scales::comma(sum(n_reps))), by = .(course)]
 ```
 
     ##     course     trials
-    ## 1:  French  3,983,510
-    ## 2: English 12,841,237
+    ## 1:  French  3,983,138
+    ## 2: English 12,839,804
 
-What are we left with?
+What are we left
+with?
 
 ``` r
 dat_rof[!under & !over, .(trials = scales::comma(sum(n_reps))), by = .(course)]
 ```
 
     ##     course     trials
-    ## 1:  French 30,178,692
-    ## 2: English 68,012,528
+    ## 1:  French 30,175,649
+    ## 2: English 68,005,888
+
+How many learning sequences is
+that?
+
+``` r
+dat_rof[!under & !over, .(sequences = scales::comma(.N)), by = .(course)]
+```
+
+    ##     course  sequences
+    ## 1:  French  6,281,938
+    ## 2: English 16,784,808
+
+How many sequences in the test split alone?
+
+``` r
+dat_test[, .(sequences = scales::comma(.N)), by = .(course)]
+```
+
+    ##     course sequences
+    ## 1:  French 1,256,485
+    ## 2: English 3,357,209
+
+How many trials in the test split alone?
+
+``` r
+dat_test[, .(trials = scales::comma(sum(n_reps))), by = .(course)]
+```
+
+    ##     course     trials
+    ## 1:  French  6,033,733
+    ## 2: English 13,602,025
+
+How many facts and learners in
+total?
+
+``` r
+dat_rof[!under & !over, .(facts = scales::comma(length(unique(fact_id))),
+                          learners = scales::comma(length(unique(user_id)))), by = .(course)]
+```
+
+    ##     course  facts learners
+    ## 1:  French 27,093   42,489
+    ## 2: English 59,416   98,302
+
+How many facts and learners in the test split?
+
+``` r
+dat_test[, .(facts = scales::comma(length(unique(fact_id))),
+             learners = scales::comma(length(unique(user_id)))), by = .(course)]
+```
+
+    ##     course  facts learners
+    ## 1:  French 24,647   42,205
+    ## 2: English 54,447   96,531
 
 ### Number of trials per sequence
 
-We only included sequences consisting of at least 3 trials and at most 25 trials.
+We only included sequences consisting of at least 3 trials and at most
+25
+trials.
 
 ``` r
 seq_trials <- rbind(dat_train[, .(n_reps, course, set = "Training set")], dat_test[, .(n_reps, course, set = "Test set")])
@@ -136,15 +191,15 @@ ggplot(seq_trials, aes(x = n_reps)) +
         axis.text.y = element_blank())
 ```
 
-![](06_data_statistics_files/figure-markdown_github/unnamed-chunk-9-1.png)
+![](06_data_statistics_files/figure-gfm/unnamed-chunk-14-1.png)<!-- -->
 
 ``` r
 seq_trials[, .(median = median(n_reps), mean = mean(n_reps)), by = .(course)]
 ```
 
     ##     course median     mean
-    ## 1:  French      4 4.803563
-    ## 2: English      3 4.051631
+    ## 1:  French      4 4.803561
+    ## 2: English      3 4.051630
 
 # Number of sequences per prediction
 
@@ -196,7 +251,7 @@ ggplot(pred_stats, aes(x = n_train_obs)) +
         axis.text.x = element_text(vjust = 0))
 ```
 
-![](06_data_statistics_files/figure-markdown_github/unnamed-chunk-12-1.png)
+![](06_data_statistics_files/figure-gfm/unnamed-chunk-17-1.png)<!-- -->
 
 ``` r
 ggsave(file.path("..", "output", "sequences_per_prediction.png"),
@@ -217,7 +272,8 @@ pred_stats[, .(q_25 = quantile(n_train_obs, .25),
     ## 3: English    Fact   64  143  451 335.1628
     ## 4: English Learner   61  116  214 171.9334
 
-Does the number of sequences that went into a prediction affect the maggnitude of the prediction error?
+Does the number of sequences that went into a prediction affect the
+maggnitude of the prediction error?
 
 ``` r
 pred_v_obs_fact <- data.table()
@@ -241,7 +297,10 @@ pred_v_obs_user <- pred_v_obs_user[!is.na(alpha)]
 pred_v_obs_user <- unique(pred_v_obs_user)
 ```
 
-The correlation between the number of training observations and the absolute prediction error is practically zero (though statistically significant due to the size of the data):
+The correlation between the number of training observations and the
+absolute prediction error is practically zero (though statistically
+significant due to the size of the
+data):
 
 ``` r
 pred_v_obs_fact[, cor.test(n_train_obs, abs(alpha - pred_fact)), by = .(course)]
@@ -283,7 +342,11 @@ pred_v_obs_user[, cor.test(n_train_obs, abs(alpha - pred_user)), by = .(course)]
     ## 3: n_train_obs and abs(alpha - pred_user)  0.03569588
     ## 4: n_train_obs and abs(alpha - pred_user)  0.03786730
 
-Are there just diminishing returns? Then we might see a stronger correlation on the lower end of the scale. But zooming in on predictions based on 30 (the minimum) to 100 observations, we still get correlations close to zero:
+Are there just diminishing returns? Then we might see a stronger
+correlation on the lower end of the scale. But zooming in on predictions
+based on 30 (the minimum) to 100 observations, we still get correlations
+close to
+zero:
 
 ``` r
 pred_v_obs_fact[n_train_obs <= 100, cor.test(n_train_obs, abs(alpha - pred_fact)), by = .(course)]
@@ -341,11 +404,11 @@ sessionInfo()
     ## 
     ## locale:
     ##  [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C              
-    ##  [3] LC_TIME=en_GB.UTF-8        LC_COLLATE=en_US.UTF-8    
-    ##  [5] LC_MONETARY=en_GB.UTF-8    LC_MESSAGES=en_US.UTF-8   
-    ##  [7] LC_PAPER=en_GB.UTF-8       LC_NAME=C                 
+    ##  [3] LC_TIME=nl_NL.UTF-8        LC_COLLATE=en_US.UTF-8    
+    ##  [5] LC_MONETARY=nl_NL.UTF-8    LC_MESSAGES=en_US.UTF-8   
+    ##  [7] LC_PAPER=nl_NL.UTF-8       LC_NAME=C                 
     ##  [9] LC_ADDRESS=C               LC_TELEPHONE=C            
-    ## [11] LC_MEASUREMENT=en_GB.UTF-8 LC_IDENTIFICATION=C       
+    ## [11] LC_MEASUREMENT=nl_NL.UTF-8 LC_IDENTIFICATION=C       
     ## 
     ## attached base packages:
     ## [1] stats     graphics  grDevices utils     datasets  methods   base     

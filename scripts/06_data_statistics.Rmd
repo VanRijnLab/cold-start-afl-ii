@@ -74,6 +74,10 @@ for (course in courses) {
   dat_test <- rbind(dat_test, rof_sub_test)
   
 }
+
+dat_rof <- unique(dat_rof)
+dat_train <- unique(dat_train)
+dat_test <- unique(dat_test)
 ```
 
 How many trials do we start with?
@@ -100,7 +104,32 @@ What are we left with?
 dat_rof[!under & !over, .(trials = scales::comma(sum(n_reps))), by = .(course)]
 ```
 
+How many learning sequences is that?
+```{r}
+dat_rof[!under & !over, .(sequences = scales::comma(.N)), by = .(course)]
+```
 
+How many sequences in the test split alone?
+```{r}
+dat_test[, .(sequences = scales::comma(.N)), by = .(course)]
+```
+
+How many trials in the test split alone?
+```{r}
+dat_test[, .(trials = scales::comma(sum(n_reps))), by = .(course)]
+```
+
+How many facts and learners in total?
+```{r}
+dat_rof[!under & !over, .(facts = scales::comma(length(unique(fact_id))),
+                          learners = scales::comma(length(unique(user_id)))), by = .(course)]
+```
+
+How many facts and learners in the test split?
+```{r}
+dat_test[, .(facts = scales::comma(length(unique(fact_id))),
+             learners = scales::comma(length(unique(user_id)))), by = .(course)]
+```
 
 
 ### Number of trials per sequence
