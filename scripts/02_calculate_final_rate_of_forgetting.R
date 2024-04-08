@@ -4,7 +4,7 @@ library(purrr)
 library(furrr)
 library(stringr)
 
-future::plan("multiprocess", workers = 6) # Set to desired number of cores
+future::plan("multisession", workers = 6) # Set to desired number of cores
 
 
 source(file.path("scripts", "99_slimstampen_model_funs.R"))

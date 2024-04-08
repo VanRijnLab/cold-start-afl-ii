@@ -1,0 +1,387 @@
+---
+title: "Extra plots"
+author: "Maarten van der Velde"
+date: "Last updated: `r Sys.Date()`"
+output:
+  html_notebook:
+    smart: no
+    toc: yes
+    toc_float: yes
+  github_document:
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Overview
+
+This notebook contains extra plots for in the paper.
+
+# Setup
+```{r}
+library(fst)
+library(data.table)
+library(tidyr)
+library(purrr)
+library(furrr)
+library(stringr)
+library(ggplot2)
+library(patchwork)
+library(wesanderson)
+```
+
+```{r}
+source(file.path("..", "scripts", "99_slimstampen_model_funs.R"))
+```
+
+```{r}
+future::plan("multisession", workers = 9) # Set to desired number of cores
+```
+
+```{r}
+theme_set(theme_light(base_size = 14) +
+            theme(strip.text = element_text(colour = "black")))
+
+condition_colours <- wes_palette("Darjeeling1", n = 5)
+condition_colours[c(2, 4, 5)] <- condition_colours[c(4, 5, 2)]
+
+dataset_colours <- wes_palette("Darjeeling2", n = 5)[c(2, 3)]
+```
+
+
+# Could we estimate SoF from a single RT
+
+We always require at least 3 responses before we start adjusting SoF from its starting point of 0.3.
+However, we could also start adjusting after the first response, based on the RT of that trial.
+
+What does the distribution of RTs look like?
+
+Load the data:
+```{r}
+d_gl <- read_fst(file.path("..", "data", "formatted_Grandes_Lignes.fst"))
+# d_ss <- read_fst(file.path("..", "data", "formatted_Stepping_Stones.fst"))
+# d <- rbind(d_gl, d_ss)
+# rm(d_gl, d_ss)
+```
+
+Add a trial counter:
+```{r}
+setDT(d_gl)
+setorder(d_gl, user_id, fact_id, start_time)
+d_gl[, trial := 1:.N, by = .(user_id, fact_id)]
+```
+
+Plot the RT distribution by trial for the first three trials (correct responses only):
+```{r}
+d_gl_first10 <- d_gl[trial <= 10 & correct == 1]
+
+ggplot(d_gl_first10[sample(1e6)], aes(x = as.factor(trial), y = rt)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(x = "Trial", y = "RT (s)") +
+  scale_y_log10()
+```
+
+Plot the quantiles of the response time distribution by trial:
+```{r}
+rt_quantiles <- d_gl_first10[, .(quantile =  c(0.025, 0.25, 0.5, 0.75, 0.975),
+                                rt = quantile(rt, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))), by = trial]
+
+rt_quantiles_wide <- dcast(rt_quantiles, trial ~ quantile, value.var = "rt")
+
+ggplot(rt_quantiles_wide, aes(x = trial)) +
+  geom_ribbon(aes(ymin = `0.025`, ymax = `0.975`), fill = "midnightblue", alpha = 0.2) +
+  geom_ribbon(aes(ymin = `0.25`, ymax = `0.75`), fill = "midnightblue", alpha = 0.4) +
+  geom_line(aes(y = `0.5`),  colour = "midnightblue") +
+  scale_x_continuous(breaks = 1:10) +
+  labs(x = "Trial", y = "RT (s)")
+```
+Let's zoom in on the third trial, which is the first delayed repetition (and also the data we present elsewhere in the paper).
+
+```{r}
+rt_quantiles_wide[trial == 3]
+```
+ 
+ # Difference in SoF translated to retention period
+
+
+Memory functions:
+```{r}
+activation <- function (t, alpha) {
+  log(t^-alpha)
+}
+
+p_recall <- function(a, tau, s = .2) {
+  1 / (1 + exp(-(a - tau)/s))
+}
+```
+
+Given a retrieval threshold, we can calculate the time until activation drops below this threshold.
+```{r}
+time_until_threshold <- function (tau, alpha) {
+  exp(-tau/alpha)
+}
+```
+
+
+```{r}
+time_until_threshold(-0.8, 0.5)
+```
+
+```{r}
+t <- seq(1, 60*60, .1)
+
+d_sof_sim <- data.table(sof = rep(c(0.2, 0.25, 0.3, 0.35, 0.4), each = length(t)),
+                        t = rep(t, 5))
+
+d_sof_sim[, activation := activation(t, sof)]
+d_sof_sim[, p_recall := p_recall(activation, -.8, s = .2)]
+d_sof_sim[, sof := as.factor(sof)]
+levels(d_sof_sim$sof) <- c(expression(paste(alpha, " = 0.20")), expression(paste(alpha, " = 0.25")), expression(paste(alpha, " = 0.30")), expression(paste(alpha, " = 0.35")), expression(paste(alpha, " = 0.40")))
+```
+
+When does p(recall) drop below 5%?
+```{r}
+below_5pct <- d_sof_sim[p_recall < 0.05, .(t = min(t)), by = .(sof)]
+
+convert_seconds_to_minutes_and_seconds <- function (time_in_seconds) {
+  minutes <- floor(time_in_seconds / 60)
+  seconds <- floor(time_in_seconds %% 60)
+  sprintf("%dm%ds", minutes, seconds)
+}
+
+below_5pct[, t_label := convert_seconds_to_minutes_and_seconds(t)]
+below_5pct
+```
+
+```{r}
+p_p_recall <- ggplot(d_sof_sim, aes(x = t, y = p_recall, colour = sof)) +
+  # Add y intercept lines for p = 5%
+  geom_hline(yintercept = 0.05, linetype = 2) +
+  geom_line(lwd = .8) +
+  geom_segment(data = below_5pct, aes(x = t, xend = t, y = 0.05, yend = 0.06), colour = "black") +
+  geom_point(data = below_5pct, aes(x = t, y = 0.05), size = 2) +
+  ggtext::geom_richtext(data = below_5pct,
+                        aes(x = t, y = .065, label = t_label),
+                        angle = 45,
+                        hjust = 0,
+                        vjust = .5,
+                        label.size = NA,
+                        colour = "NA",
+                        alpha = .9,
+                        size = 3) +
+  geom_text(data = below_5pct,
+            aes(x = t, y = .065, label = t_label),
+            angle = 45,
+            hjust = 0,
+            vjust = .5,
+            colour = "black",
+            size = 3) +
+    scale_x_log10(breaks = c(1, 60, 10*60, 60*60),
+                labels = c("1 sec", "1 min", "10 min", "1 h"),
+                expand = c(0, 0)) +
+  scale_y_log10(breaks = c(1, 0.5, .25, .1, 0.05, 0.01), labels = scales::percent_format(accuracy = 1)) +
+  scale_colour_manual(values = RColorBrewer::brewer.pal(name = "GnBu", n = 6)[2:6], labels = scales::label_parse()) +
+  guides(colour = "none") +
+  labs(x = "Time since encoding\n(logarithmic scale)", y = "Probability of recall\n(logarithmic scale)", colour = "Speed of Forgetting") +
+  coord_cartesian(ylim = c(.01, 1), xlim = c(1, 60*60))
+  
+
+p_p_recall
+```
+
+
+# Reaction time is noisy
+
+I want to plot the final alpha estimate for each learning sequence against the RT in the third trial of the learning sequence.
+
+Let's use the French training set data to get final alpha values per learning sequence.
+```{r}
+d_alpha_gl <- read_fst(file.path("..", "data", "training_Grandes_Lignes.fst"))
+d_alpha_ss <- read_fst(file.path("..", "data", "training_Stepping_Stones.fst"))
+setDT(d_alpha_gl)
+setDT(d_alpha_ss)
+d_alpha <- rbind(d_alpha_gl, d_alpha_ss)
+rm(d_alpha_gl, d_alpha_ss)
+```
+
+Also load the raw learning sequence data to get the RT in the third trial.
+```{r}
+d_learn_gl <- read_fst(file.path("..", "data", "formatted_Grandes_Lignes.fst"))
+d_learn_ss <- read_fst(file.path("..", "data", "formatted_Stepping_Stones.fst"))
+setDT(d_learn_gl)
+setDT(d_learn_ss)
+d_learn <- rbind(d_learn_gl, d_learn_ss)
+rm(d_learn_gl, d_learn_ss)
+setorder(d_learn, user_id, fact_id, start_time)
+```
+
+
+Keep the first three trials of each learning sequence.
+```{r}
+d_learn[, trial := 1:.N, by = .(user_id, fact_id)]
+d_learn <- d_learn[trial <= 3]
+```
+
+
+Merge with alpha calculations:
+```{r}
+d_alpha <- d_learn[d_alpha, on = .(user_id, fact_id)]
+d_alpha <- d_alpha[!is.na(start_time)] # Remove sequences that are not in the training set
+```
+
+Round alpha to the nearest .05
+```{r}
+round_to_nearest_0.05 <- function(x) {
+  round(x * 20) / 20
+}
+
+d_alpha[, alpha_rnd := round_to_nearest_0.05(alpha)]
+```
+
+
+
+For easy interpretability of the plot, keep only correct responses, with 0 < RT < 60s, and 0.2 < alpha_rnd < 0.4.
+```{r}
+d_alpha_clean <- d_alpha[correct == TRUE & rt > 0 & rt < 60*1000 & alpha_rnd >= 0.2 & alpha_rnd <= 0.4]
+d_alpha_clean[, alpha_rnd := as.factor(alpha_rnd)]
+levels(d_alpha_clean$alpha_rnd) <- c(expression(paste(alpha, " = 0.2")), expression(paste(alpha, " = 0.25")), expression(paste(alpha, " = 0.3")), expression(paste(alpha, " = 0.35")), expression(paste(alpha, " = 0.4")))
+```
+
+```{r}
+d_alpha_clean_median <- d_alpha_clean[, .(rt = median(rt)), by = .(user_id, trial, alpha_rnd)]
+```
+
+
+Plot RT against alpha in each trial:
+```{r}
+p_rt_by_alpha <- ggplot(d_alpha_clean_median, aes(group = interaction(trial, alpha_rnd), x = trial, y = rt/1000)) +
+  geom_boxplot(aes(fill = alpha_rnd), width = .5, outlier.shape = NA) +
+  scale_fill_manual(values = RColorBrewer::brewer.pal(name = "GnBu", n = 6)[2:6], labels = scales::label_parse()) +
+  scale_x_continuous(breaks = 1:3) +
+  scale_y_continuous() +
+  guides(fill = "none") +
+  labs(x = "Practice trial", y = "Median response time (s)\n(correct responses)", colour = "Speed of Forgetting") +
+  coord_cartesian(ylim = c(0, 7.5))
+
+p_rt_by_alpha
+```
+
+Calculate the correlation between alpha and RT per trial on a sample of the data:
+```{r}
+d_alpha_clean[sample(.N, 1e6)][, .(spearman_rho = cor(rt, alpha, method = "spearman")), by = trial]
+```
+
+We can make a similar plot for accuracy.
+```{r}
+d_alpha_acc <- d_alpha[rt > 0 & rt < 60*1000 & alpha_rnd >= 0.2 & alpha_rnd <= 0.4]
+d_alpha_acc[, alpha_rnd := as.factor(alpha_rnd)]
+levels(d_alpha_acc$alpha_rnd) <- c(expression(paste(alpha, " = 0.20")), expression(paste(alpha, " = 0.25")), expression(paste(alpha, " = 0.30")), expression(paste(alpha, " = 0.35")), expression(paste(alpha, " = 0.40")))
+```
+
+```{r}
+d_alpha_acc_mean <- d_alpha_acc[, .(accuracy = mean(correct),
+                                    accuracy_se = sd(correct)/sqrt(.N)), by = .(user_id, trial, alpha_rnd)]
+```
+
+
+
+```{r}
+p_acc_by_alpha <- ggplot(d_alpha_acc_mean, aes(group = interaction(trial, alpha_rnd), x = trial, y = accuracy)) +
+  geom_boxplot(aes(fill = alpha_rnd), width = .5, outlier.shape = NA) +
+  scale_fill_manual(values = RColorBrewer::brewer.pal(name = "GnBu", n = 6)[2:6], labels = scales::label_parse()) +
+  scale_x_continuous(breaks = 1:3) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  guides(fill = "none") +
+  labs(x = "Practice trial", y = "Mean accuracy", colour = "Speed of Forgetting") +
+  coord_cartesian(ylim = c(0, 1))
+
+p_acc_by_alpha
+```
+
+
+
+# Plot activation and probability of recall in learning session
+```{r}
+t <- seq(0, 85000, by = 50)
+alpha <- c(0.2, .25, 0.3, .35, 0.4)
+act <- list()
+r <- data.table()
+encounter_times <- c(0, 14400, 78850)
+
+
+for(j in seq_along(alpha)) {
+  a <- alpha[j]
+  fact_id <- paste0("fact", a)
+  for (i in seq_along(t)) {
+    activation <- calculate_activation(time = t[i], id = fact_id, factalpha = a, responses = r)
+    activation_proj <- calculate_activation(time = t[i] + 15000, id = fact_id, factalpha = a, responses = r)
+    p_r <- p_recall(activation, tau = -0.8)
+    # if (activation_proj <= -0.8) {
+    if (t[i] %in% encounter_times) {
+        r <- rbind(r, list(fact_id = fact_id, text = "question", start_time = t[i], rt = 4000, correct = TRUE, threshold = -0.8))
+    }
+    act[[length(t)*(j-1) + i]] <- list(time = t[i], fact_id = fact_id, alpha = a, activation = activation, p_recall = p_r)
+  }
+}
+
+act <- rbindlist(act)
+r$alpha <- as.factor(stringr::str_remove(r$fact_id, "fact"))
+act$alpha <- as.factor(act$alpha)
+# reorder the levels of the alpha factor to 0.2, 0.4, 0.3
+levels(act$alpha) <- c(expression(paste(alpha, " = 0.20")), expression(paste(alpha, " = 0.25")), expression(paste(alpha, " = 0.30")), expression(paste(alpha, " = 0.35")), expression(paste(alpha, " = 0.40")))
+levels(r$alpha) <- c(expression(paste(alpha, " = 0.20")), expression(paste(alpha, " = 0.25")), expression(paste(alpha, " = 0.30")), expression(paste(alpha, " = 0.35")), expression(paste(alpha, " = 0.40")))
+
+
+
+
+p_act <- ggplot(act, aes(x = time/1000, y = activation, colour = alpha, group = alpha)) +
+  geom_hline(yintercept = -.8, linetype = 2) +
+  geom_line(lwd = .8) +
+  geom_vline(data = NULL, xintercept = encounter_times/1000, lwd = 1.25, colour = "black") +
+  geom_point(data = act[time %in% encounter_times & time > 0], aes(x = time/1000, y = activation), size = 2) +
+  scale_colour_manual(values = RColorBrewer::brewer.pal(name = "GnBu", n = 6)[2:6], labels = scales::label_parse()) +
+  guides(colour = guide_legend(override.aes = list(shape = 15, size = 6, lwd = 0))) +
+  labs(x = "Time (s)",
+       y = "Activation",
+       colour = "Speed of Forgetting")
+
+  
+
+p_p_rec <- ggplot(act, aes(x = time/1000, y = p_recall, colour = alpha, group = alpha)) +
+  geom_hline(yintercept = .5, linetype = 2) +
+  geom_line(lwd = .8) +
+  geom_vline(data = NULL, xintercept = encounter_times/1000, lwd = 1.25, colour = "black") +
+  geom_point(data = act[time %in% encounter_times & time > 0], aes(x = time/1000, y = p_recall), size = 2) +
+  # Add labels for p_recall at encounter times, formatted as "50%"
+  geom_label(data = act[time %in% encounter_times & time > 0], aes(x = time/1000, y = p_recall, label = scales::percent(p_recall, 1)), size = 4, hjust = -.15, vjust = .5, colour = "black", label.size = NA, label.padding = unit(0.2, "lines"), alpha = .9) +
+
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_colour_manual(values = RColorBrewer::brewer.pal(name = "GnBu", n = 6)[2:6], labels = scales::label_parse()) +
+  # Make colour legend a rectangle and remove the line in the guide
+  guides(colour = guide_legend(override.aes = list(shape = 15, size = 6, lwd = 0))) +
+  labs(x = "Time (s)",
+       y = "Probability of recall",
+       colour = "Speed of Forgetting")
+
+```
+
+
+
+# Combine plots
+
+```{r}
+(p_p_recall + p_acc_by_alpha + p_rt_by_alpha) / p_p_rec +
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "A") & 
+  theme(legend.position = "bottom")
+
+ggsave(file.path("..", "output", "Fig0.png"), device = "png", width = 10, height = 8)
+```
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+

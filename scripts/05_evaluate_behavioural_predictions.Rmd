@@ -35,6 +35,7 @@ library(wesanderson)
 library(lme4)
 library(lmerTest)
 library(multcomp)
+library(emmeans)
 ```
 
 ```{r}
@@ -42,7 +43,7 @@ source(file.path("..", "scripts", "99_slimstampen_model_funs.R"))
 ```
 
 ```{r}
-future::plan("multiprocess", workers = 6) # Set to desired number of cores
+future::plan("multisession", workers = 9) # Set to desired number of cores
 ```
 
 ```{r}
@@ -161,7 +162,8 @@ predict_behaviour <- function (d) {
             predicted_accuracy <- p_recall(
               activation = predicted_activation,
               threshold = -0.8,
-              activation_noise = 0.5
+              # activation_noise = 0.5
+              activation_noise = 0.2
             )
             
             predicted_rt <- estimate_reaction_time_from_activation(
@@ -213,18 +215,13 @@ predict_behaviour <- function (d) {
 
 # Calculate predictions
 
-Load test set data with rate of forgetting predictions:
-```{r}
-pred_gl <- load_data_with_predictions("Grandes Lignes")
-pred_ss <- load_data_with_predictions("Stepping Stones")
-```
-
 Calculate behavioural predictions for trial 3:
 ```{r}
 pred_gl_beh_path <- file.path("..", "data", "predictions", "pred_behaviour_gl.fst")
 pred_ss_beh_path <- file.path("..", "data", "predictions", "pred_behaviour_ss.fst")
 
 if (!file.exists(pred_gl_beh_path)) {
+  pred_gl <- load_data_with_predictions("Grandes Lignes")
   pred_gl_beh <- predict_behaviour(pred_gl)
   write_fst(pred_gl_beh, pred_gl_beh_path)
 } else {
@@ -233,6 +230,7 @@ if (!file.exists(pred_gl_beh_path)) {
 }
 
 if (!file.exists(pred_ss_beh_path)) {
+  pred_ss <- load_data_with_predictions("Stepping Stones")
   pred_ss_beh <- predict_behaviour(pred_ss)
   write_fst(pred_ss_beh, pred_ss_beh_path)
 } else {
@@ -475,6 +473,17 @@ ht_rt_gl <- glht(m_rt_pred_error_gl, linfct = mcp(prediction_label = "Tukey"))
 summary(ht_rt_gl)
 ```
 
+Use `emmeans` to estimate the standardised effect size for each contrast:
+```{r}
+emm_rt_gl <- emmeans(m_rt_pred_error_gl, "prediction_label", lmer.df = "asymptotic")
+# Sigma calculation follows the example in the eff_size documentation (see also Westfall et al., 2014)
+vc_rt_gl <- as.data.frame(VarCorr(m_rt_pred_error_gl)) 
+sigma_rt_gl <- sqrt(sum(vc_rt_gl$vcov))
+eff_size_rt_gl <- eff_size(emm_rt_gl, sigma = sigma_rt_gl, edf = Inf) # Choice of edf does not affect effect size, only the SE
+eff_size_rt_gl
+```
+
+
 Inspect the model's residuals:
 ```{r}
 qqnorm(resid(m_rt_pred_error_gl))
@@ -520,6 +529,17 @@ ht_rt_ss <- glht(m_rt_pred_error_ss, linfct = mcp(prediction_label = "Tukey"))
 summary(ht_rt_ss)
 ```
 
+Use `emmeans` to estimate the standardised effect size for each contrast:
+```{r}
+emm_rt_ss <- emmeans(m_rt_pred_error_ss, "prediction_label", lmer.df = "asymptotic")
+# Sigma calculation follows the example in the eff_size documentation (see also Westfall et al., 2014)
+vc_rt_ss <- as.data.frame(VarCorr(m_rt_pred_error_ss)) 
+sigma_rt_ss <- sqrt(sum(vc_rt_ss$vcov))
+eff_size_rt_ss <- eff_size(emm_rt_ss, sigma = sigma_rt_ss, edf = Inf) # Choice of edf does not affect effect size, only the SE
+eff_size_rt_ss
+```
+
+
 Inspect the model's residuals:
 ```{r}
 qqnorm(resid(m_rt_pred_error_ss))
@@ -544,7 +564,7 @@ ht_rt_both_tidy <- rbind(ht_rt_gl_tidy[, course := "French"],
 ```
 
 ```{r}
-p_rt_pred_error_comp <- ggplot(ht_rt_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+p_rt_pred_error_comp <- ggplot(ht_rt_both_tidy, aes(x = contrast, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
   geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
   geom_errorbar(width = 0.1) + 
   geom_point() +
@@ -659,24 +679,49 @@ How big was the improvement from worst to best prediction method?
 French:
 ```{r}
 # Absolute change
-ht_rt_gl_tidy[lhs == "Fact - Default", estimate[1]]
+ht_rt_gl_tidy[contrast == "Fact - Default", estimate[1]]
 
 # % change
 scales::percent(
-  ht_rt_gl_tidy[lhs == "Fact - Default", estimate[1]] / fixef(m_rt_pred_error_gl)[[1]],
+  ht_rt_gl_tidy[contrast == "Fact - Default", estimate[1]] / fixef(m_rt_pred_error_gl)[[1]],
   accuracy = .1)
+
+# Associated standardised effect size
+eff_size_rt_gl_tidy <- broom::tidy(eff_size_rt_gl) |> as.data.table()
+eff_size_rt_gl_tidy[contrast == "Default - Fact", estimate]
 ```
 
 English:
 ```{r}
 # Absolute change
-ht_rt_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+ht_rt_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]]
 
 # % change
 scales::percent(
-  ht_rt_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_rt_pred_error_ss)[[1]],
+  ht_rt_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]] / fixef(m_rt_pred_error_ss)[[1]],
   accuracy = .1)
+
+# Associated standardised effect size
+eff_size_rt_ss_tidy <- broom::tidy(eff_size_rt_ss) |> as.data.table()
+eff_size_rt_ss_tidy[contrast == "Default - Fact & Learner", estimate]
 ```
+
+#### RMSE
+
+The mean absolute prediction error is a linear error metric.
+We could also choose a non-linear metric that penalises larger deviations more heavily.
+A common choice would be RMSE (root mean squared error).
+
+```{r}
+pred_rt_error[, .(mae = mean(abs_rt_pred_error),
+                  rmse = sqrt(mean(rt_pred_error^2))),
+                  by = .(course, prediction_label)] |>
+  ggplot(aes(x = prediction_label, y = rmse, group = course, colour = course)) +
+  geom_line() +
+  geom_point()
+```
+
+
 
 # Response accuracy
 
@@ -812,7 +857,7 @@ Fit a regression model.
 ##### French
 
 ```{r}
-m_acc_pred_error_gl_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Grandes_Lignes.rda")
+m_acc_pred_error_gl_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Grandes_Lignes_new.rda")
 
 if (file.exists(m_acc_pred_error_gl_file)) {
   load(m_acc_pred_error_gl_file)
@@ -842,6 +887,16 @@ ht_acc_gl <- glht(m_acc_pred_error_gl, linfct = mcp(prediction_label = "Tukey"))
 summary(ht_acc_gl)
 ```
 
+Use `emmeans` to estimate the standardised effect size for each contrast:
+```{r}
+emm_acc_gl <- emmeans(m_acc_pred_error_gl, "prediction_label", lmer.df = "asymptotic")
+# Sigma calculation follows the example in the eff_size documentation (see also Westfall et al., 2014)
+vc_acc_gl <- as.data.frame(VarCorr(m_acc_pred_error_gl)) 
+sigma_acc_gl <- sqrt(sum(vc_acc_gl$vcov))
+eff_size_acc_gl <- eff_size(emm_acc_gl, sigma = sigma_acc_gl, edf = Inf) # Choice of edf does not affect effect size, only the SE
+eff_size_acc_gl
+```
+
 Inspect the model's residuals:
 ```{r}
 qqnorm(resid(m_acc_pred_error_gl))
@@ -855,7 +910,7 @@ plot(m_acc_pred_error_gl)
 ##### English
 
 ```{r}
-m_acc_pred_error_ss_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Stepping_Stones.rda")
+m_acc_pred_error_ss_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Stepping_Stones_new.rda")
 
 if (file.exists(m_acc_pred_error_ss_file)) {
   load(m_acc_pred_error_ss_file)
@@ -886,6 +941,16 @@ ht_acc_ss <- glht(m_acc_pred_error_ss, linfct = mcp(prediction_label = "Tukey"))
 summary(ht_acc_ss)
 ```
 
+Use `emmeans` to estimate the standardised effect size for each contrast:
+```{r}
+emm_acc_ss <- emmeans(m_acc_pred_error_ss, "prediction_label", lmer.df = "asymptotic")
+# Sigma calculation follows the example in the eff_size documentation (see also Westfall et al., 2014)
+vc_acc_ss <- as.data.frame(VarCorr(m_acc_pred_error_ss)) 
+sigma_acc_ss <- sqrt(sum(vc_acc_ss$vcov))
+eff_size_acc_ss <- eff_size(emm_acc_ss, sigma = sigma_acc_ss, edf = Inf) # Choice of edf does not affect effect size, only the SE
+eff_size_acc_ss
+```
+
 Inspect the model's residuals:
 ```{r}
 qqnorm(resid(m_acc_pred_error_ss))
@@ -909,7 +974,7 @@ ht_acc_both_tidy <- rbind(ht_acc_gl_tidy[, course := "French"],
 ```
 
 ```{r}
-p_acc_pred_error_comp <- ggplot(ht_acc_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+p_acc_pred_error_comp <- ggplot(ht_acc_both_tidy, aes(x = contrast, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
   geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
   geom_errorbar(width = 0.1) + 
   geom_point() +
@@ -945,7 +1010,7 @@ annotation_df_ss <- data.table(
           4, 5,
           5
   ),
-  y = seq(max(pred_acc_error_avg$mae)*1.01 + .01125, max(pred_acc_error_avg$mae)*1.01, by = -.00125),
+  y = seq(max(pred_acc_error_avg$mae)*1.01 + .0225, max(pred_acc_error_avg$mae)*1.01, by = -.0025),
   label = c("p < .001", "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001",
@@ -964,7 +1029,7 @@ annotation_df_gl <- data.table(
           4, 5,
           5
   ),
-  y = seq(max(pred_acc_error_avg$mae)*1.01 + .01125, max(pred_acc_error_avg$mae)*1.01, by = -.00125),
+  y = seq(max(pred_acc_error_avg$mae)*1.01 + .0225, max(pred_acc_error_avg$mae)*1.01, by = -.0025),
   label = c("p < .001", "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001",
@@ -985,7 +1050,7 @@ p_acc_pred_error_summary <- ggplot(pred_acc_error_avg, aes(x = prediction_rank, 
              colour = "black", 
              alpha = .9,
              label.size = NA, 
-             nudge_y = -.004) +
+             nudge_y = -.007) +
   labs(x = NULL,
        y = "Absolute prediction error:\nresponse accuracy",
        colour = "Course") +
@@ -995,11 +1060,13 @@ p_acc_pred_error_summary <- ggplot(pred_acc_error_avg, aes(x = prediction_rank, 
                                    "p < .01" = 5,
                                    "p < .05" = 2,
                                    "n.s." = 3),
+                        drop = FALSE,
                         name = "Pairwise comparison:") +
   scale_alpha_manual(values = c("p < .001" = 1,
                                 "p < .01" = .75,
                                 "p < .05" = .5, 
                                 "n.s." = .25), 
+                     drop = FALSE,
                      name = "Pairwise comparison:") +
   guides(colour = "none") +
   ggsignif::geom_signif(data = annotation_df_acc,
@@ -1023,23 +1090,31 @@ How big was the improvement from worst to best prediction method?
 French:
 ```{r}
 # Absolute change
-ht_acc_gl_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+ht_acc_gl_tidy[contrast == "Fact & Learner - Default", estimate[1]]
 
 # % change
 scales::percent(
-  ht_acc_gl_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_gl)[[1]],
+  ht_acc_gl_tidy[contrast == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_gl)[[1]],
   accuracy = .1)
+
+# Associated standardised effect size
+eff_size_acc_gl_tidy <- broom::tidy(eff_size_acc_gl) |> as.data.table()
+eff_size_acc_gl_tidy[contrast == "Default - Fact & Learner", estimate]
 ```
 
 English:
 ```{r}
 # Absolute change
-ht_acc_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+ht_acc_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]]
 
 # % change
 scales::percent(
-  ht_acc_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_ss)[[1]],
+  ht_acc_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_ss)[[1]],
   accuracy = .1)
+
+# Associated standardised effect size
+eff_size_acc_ss_tidy <- broom::tidy(eff_size_acc_ss) |> as.data.table()
+eff_size_acc_ss_tidy[contrast == "Default - Fact & Learner", estimate]
 ```
 
 

@@ -1,27 +1,31 @@
 Evaluate behavioural predictions
 ================
 Maarten van der Velde
-Last updated: 2022-10-17
+Last updated: 2024-01-10
 
--   [Overview](#overview)
--   [Setup](#setup)
-    -   [Helper functions](#helper-functions)
--   [Calculate predictions](#calculate-predictions)
--   [Activation](#activation)
--   [Response time](#response-time)
-    -   [Predicted response time](#predicted-response-time)
-        -   [Distribution of predictions](#distribution-of-predictions)
-        -   [Predicted vs observed values](#predicted-vs-observed-values)
--   [Response accuracy](#response-accuracy)
-    -   [Predicted response accuracy](#predicted-response-accuracy)
-        -   [Distribution of predictions](#distribution-of-predictions-1)
-        -   [Predicted vs observed values](#predicted-vs-observed-values-1)
--   [Combined plot](#combined-plot)
--   [Session info](#session-info)
+- [Overview](#overview)
+- [Setup](#setup)
+  - [Helper functions](#helper-functions)
+- [Calculate predictions](#calculate-predictions)
+- [Activation](#activation)
+- [Response time](#response-time)
+  - [Predicted response time](#predicted-response-time)
+    - [Distribution of predictions](#distribution-of-predictions)
+    - [Predicted vs observed values](#predicted-vs-observed-values)
+- [Response accuracy](#response-accuracy)
+  - [Predicted response accuracy](#predicted-response-accuracy)
+    - [Distribution of predictions](#distribution-of-predictions-1)
+    - [Predicted vs observed values](#predicted-vs-observed-values-1)
+- [Combined plot](#combined-plot)
+- [Session info](#session-info)
 
 # Overview
 
-This notebook evaluates the behavioural predictions (RT, accuracy) that follow from the predicted rates of forgetting. We simulate the behavioural predictions that the adaptive fact learning system would have made, if it had used the predicted rate of forgetting as the starting estimate in the learning sequence.
+This notebook evaluates the behavioural predictions (RT, accuracy) that
+follow from the predicted rates of forgetting. We simulate the
+behavioural predictions that the adaptive fact learning system would
+have made, if it had used the predicted rate of forgetting as the
+starting estimate in the learning sequence.
 
 # Setup
 
@@ -45,7 +49,7 @@ source(file.path("..", "scripts", "99_slimstampen_model_funs.R"))
 ```
 
 ``` r
-future::plan("multiprocess", workers = 6) # Set to desired number of cores
+future::plan("multisession", workers = 9) # Set to desired number of cores
 ```
 
 ``` r
@@ -163,7 +167,8 @@ predict_behaviour <- function (d) {
             predicted_accuracy <- p_recall(
               activation = predicted_activation,
               threshold = -0.8,
-              activation_noise = 0.5
+              # activation_noise = 0.5
+              activation_noise = 0.2
             )
             
             predicted_rt <- estimate_reaction_time_from_activation(
@@ -214,13 +219,6 @@ predict_behaviour <- function (d) {
 
 # Calculate predictions
 
-Load test set data with rate of forgetting predictions:
-
-``` r
-pred_gl <- load_data_with_predictions("Grandes Lignes")
-pred_ss <- load_data_with_predictions("Stepping Stones")
-```
-
 Calculate behavioural predictions for trial 3:
 
 ``` r
@@ -228,6 +226,7 @@ pred_gl_beh_path <- file.path("..", "data", "predictions", "pred_behaviour_gl.fs
 pred_ss_beh_path <- file.path("..", "data", "predictions", "pred_behaviour_ss.fst")
 
 if (!file.exists(pred_gl_beh_path)) {
+  pred_gl <- load_data_with_predictions("Grandes Lignes")
   pred_gl_beh <- predict_behaviour(pred_gl)
   write_fst(pred_gl_beh, pred_gl_beh_path)
 } else {
@@ -236,6 +235,7 @@ if (!file.exists(pred_gl_beh_path)) {
 }
 
 if (!file.exists(pred_ss_beh_path)) {
+  pred_ss <- load_data_with_predictions("Stepping Stones")
   pred_ss_beh <- predict_behaviour(pred_ss)
   write_fst(pred_ss_beh, pred_ss_beh_path)
 } else {
@@ -252,9 +252,9 @@ rm(pred_gl_beh, pred_ss_beh)
 gc()
 ```
 
-    ##              used   (Mb) gc trigger    (Mb)   max used    (Mb)
-    ## Ncells    3651434  195.1    7217305   385.5    7217305   385.5
-    ## Vcells 1237212008 9439.2 2778101033 21195.3 2892276405 22066.4
+    ##             used   (Mb) gc trigger    (Mb) limit (Mb)   max used    (Mb)
+    ## Ncells   4113959  219.8    8091981   432.2         NA    8091981   432.2
+    ## Vcells 969657948 7398.0 2092266330 15962.8      32768 2153726464 16431.7
 
 # Activation
 
@@ -277,7 +277,8 @@ rm(p_act_dist)
 
 # Response time
 
-Distribution of observed correct RT (truncated at 25 seconds for readability):
+Distribution of observed correct RT (truncated at 25 seconds for
+readability):
 
 ``` r
 p_rt_dist <- ggplot(pred_beh[correct == 1 & between(rt, 0, 25000)], aes(x = rt/1000)) +
@@ -379,7 +380,7 @@ p_rt_pred_v_obs <- ggplot(pred_beh[correct == 1], aes(x = predicted_rt/1000, y =
 p_rt_pred_v_obs
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-13-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-12-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_rt_pred_v_obs, file.path("..", "output", "rt_predicted_vs_observed.png"),
@@ -390,7 +391,8 @@ rm(p_rt_pred_v_obs)
 
 #### Prediction error
 
-Distribution of prediction error (truncated to \[-5, 5\] for readability):
+Distribution of prediction error (truncated to \[-5, 5\] for
+readability):
 
 ``` r
 p_rt_pred_error <- ggplot(pred_rt_error, aes(x = rt_pred_error/1000, fill = prediction_label)) +
@@ -405,7 +407,7 @@ p_rt_pred_error <- ggplot(pred_rt_error, aes(x = rt_pred_error/1000, fill = pred
 p_rt_pred_error
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-14-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-13-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_rt_pred_error, file.path("..", "output", "rt_prediction_error.png"),
@@ -429,7 +431,7 @@ p_rt_abs_pred_error <- ggplot(pred_rt_error, aes(x = abs_rt_pred_error/1000, fil
 p_rt_abs_pred_error
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-15-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-14-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_rt_abs_pred_error, file.path("..", "output", "rt_absolute_prediction_error.png"),
@@ -454,7 +456,7 @@ ggplot(pred_rt_error_avg, aes(x = prediction_label, y = mae/1000, colour = cours
        colour = "Course")
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-16-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-15-1.png)<!-- -->
 
 Fit a regression model on absolute RT prediction error.
 
@@ -487,8 +489,7 @@ summary(m_rt_pred_error_gl)
 
     ## Linear mixed model fit by REML. t-tests use Satterthwaite's method [
     ## lmerModLmerTest]
-    ## Formula: 
-    ## abs_rt_pred_error ~ prediction_label + (1 | user_id) + (1 | fact_id)
+    ## Formula: abs_rt_pred_error ~ prediction_label + (1 | user_id) + (1 | fact_id)
     ##    Data: pred_gl_reg
     ## Control: lmerControl(optimizer = "bobyqa")
     ## 
@@ -546,34 +547,34 @@ summary(ht_rt_gl)
     ## 
     ## Linear Hypotheses:
     ##                               Estimate Std. Error z value Pr(>|z|)    
-    ## Domain - Default == 0          -19.468      6.192  -3.144  0.01418 *  
+    ## Domain - Default == 0          -19.468      6.192  -3.144  0.01430 *  
     ## Fact - Default == 0           -118.481      6.218 -19.056  < 0.001 ***
     ## Learner - Default == 0         -42.334      6.270  -6.751  < 0.001 ***
     ## Fact & Learner - Default == 0 -101.382      6.300 -16.091  < 0.001 ***
     ## Fact - Domain == 0             -99.013      6.225 -15.905  < 0.001 ***
-    ## Learner - Domain == 0          -22.867      6.278  -3.642  0.00256 ** 
+    ## Learner - Domain == 0          -22.867      6.278  -3.642  0.00248 ** 
     ## Fact & Learner - Domain == 0   -81.914      6.308 -12.986  < 0.001 ***
     ## Learner - Fact == 0             76.146      6.304  12.079  < 0.001 ***
-    ## Fact & Learner - Fact == 0      17.099      6.329   2.702  0.05375 .  
+    ## Fact & Learner - Fact == 0      17.099      6.329   2.702  0.05369 .  
     ## Fact & Learner - Learner == 0  -59.047      6.374  -9.264  < 0.001 ***
     ## ---
     ## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
     ## (Adjusted p values reported -- single-step method)
 
-Inspect the model's residuals:
+Inspect the model’s residuals:
 
 ``` r
 qqnorm(resid(m_rt_pred_error_gl))
 qqline(resid(m_rt_pred_error_gl), col = "red")
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-19-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-18-1.png)<!-- -->
 
 ``` r
 plot(m_rt_pred_error_gl)
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-20-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-19-1.png)<!-- -->
 
 ##### English
 
@@ -605,8 +606,7 @@ summary(m_rt_pred_error_ss)
 
     ## Linear mixed model fit by REML. t-tests use Satterthwaite's method [
     ## lmerModLmerTest]
-    ## Formula: 
-    ## abs_rt_pred_error ~ prediction_label + (1 | user_id) + (1 | fact_id)
+    ## Formula: abs_rt_pred_error ~ prediction_label + (1 | user_id) + (1 | fact_id)
     ##    Data: pred_ss_reg
     ## Control: lmerControl(optimizer = "bobyqa")
     ## 
@@ -671,27 +671,27 @@ summary(ht_rt_ss)
     ## Fact - Domain == 0             -31.520      6.445  -4.890   <0.001 ***
     ## Learner - Domain == 0          -13.859      6.466  -2.143   0.2017    
     ## Fact & Learner - Domain == 0   -37.717      6.491  -5.811   <0.001 ***
-    ## Learner - Fact == 0             17.661      6.497   2.718   0.0514 .  
+    ## Learner - Fact == 0             17.661      6.497   2.718   0.0513 .  
     ## Fact & Learner - Fact == 0      -6.198      6.521  -0.950   0.8770    
-    ## Fact & Learner - Learner == 0  -23.859      6.540  -3.648   0.0025 ** 
+    ## Fact & Learner - Learner == 0  -23.859      6.540  -3.648   0.0024 ** 
     ## ---
     ## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
     ## (Adjusted p values reported -- single-step method)
 
-Inspect the model's residuals:
+Inspect the model’s residuals:
 
 ``` r
 qqnorm(resid(m_rt_pred_error_ss))
 qqline(resid(m_rt_pred_error_ss), col = "red")
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-23-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-22-1.png)<!-- -->
 
 ``` r
 plot(m_rt_pred_error_ss)
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-24-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-23-1.png)<!-- -->
 
 ##### Comparison
 
@@ -706,7 +706,7 @@ ht_rt_both_tidy <- rbind(ht_rt_gl_tidy[, course := "French"],
 ```
 
 ``` r
-p_rt_pred_error_comp <- ggplot(ht_rt_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+p_rt_pred_error_comp <- ggplot(ht_rt_both_tidy, aes(x = contrast, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
   geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
   geom_errorbar(width = 0.1) + 
   geom_point() +
@@ -719,7 +719,7 @@ p_rt_pred_error_comp <- ggplot(ht_rt_both_tidy, aes(x = lhs, y = estimate, ymin 
 p_rt_pred_error_comp
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-26-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-25-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_rt_pred_error_comp, file.path("..", "output", "rt_prediction_error_comparisons.png"),
@@ -812,24 +812,41 @@ p_rt_pred_error_summary <- ggplot(pred_rt_error_avg, aes(x = prediction_rank, y 
         legend.justification = "right")
 ```
 
-    ## Warning: Ignoring unknown aesthetics: xmin, xmax, annotations, y_position
+    ## Warning in ggsignif::geom_signif(data = annotation_df_rt, aes(xmin = start, :
+    ## Ignoring unknown aesthetics: xmin, xmax, annotations, and y_position
 
 ``` r
 p_rt_pred_error_summary
 ```
 
-    ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
-    ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
 
     ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
     ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-27-1.png)
+    ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
+    ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
+
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-26-1.png)<!-- -->
 
 ``` r
 ggsave(file.path("..", "output", "rt_absolute_prediction_error_summary.png"),
        device = "png", width = 10, height = 4)
 ```
+
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
 
     ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
     ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
@@ -845,7 +862,7 @@ French:
 
 ``` r
 # Absolute change
-ht_rt_gl_tidy[lhs == "Fact - Default", estimate[1]]
+ht_rt_gl_tidy[contrast == "Fact - Default", estimate[1]]
 ```
 
     ## [1] -118.4807
@@ -853,7 +870,7 @@ ht_rt_gl_tidy[lhs == "Fact - Default", estimate[1]]
 ``` r
 # % change
 scales::percent(
-  ht_rt_gl_tidy[lhs == "Fact - Default", estimate[1]] / fixef(m_rt_pred_error_gl)[[1]],
+  ht_rt_gl_tidy[contrast == "Fact - Default", estimate[1]] / fixef(m_rt_pred_error_gl)[[1]],
   accuracy = .1)
 ```
 
@@ -863,7 +880,7 @@ English:
 
 ``` r
 # Absolute change
-ht_rt_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+ht_rt_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]]
 ```
 
     ## [1] -64.93171
@@ -871,7 +888,7 @@ ht_rt_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
 ``` r
 # % change
 scales::percent(
-  ht_rt_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_rt_pred_error_ss)[[1]],
+  ht_rt_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]] / fixef(m_rt_pred_error_ss)[[1]],
   accuracy = .1)
 ```
 
@@ -895,7 +912,7 @@ p_acc_pred_dist <- ggplot(pred_beh, aes(x = predicted_accuracy, fill = predictio
 p_acc_pred_dist
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-30-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-29-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_acc_pred_dist, file.path("..", "output", "acc_predicted_distribution.png"),
@@ -933,7 +950,7 @@ p_acc_pred_v_obs <- ggplot(pred_beh, aes(x = predicted_accuracy, y = correct, gr
 p_acc_pred_v_obs
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-32-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-31-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_acc_pred_v_obs, file.path("..", "output", "acc_predicted_vs_observed.png"),
@@ -972,7 +989,7 @@ p_acc_pred_error <- ggplot(pred_acc_error, aes(x = acc_pred_error, fill = predic
 p_acc_pred_error
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-34-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-33-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_acc_pred_error, file.path("..", "output", "acc_prediction_error.png"),
@@ -996,7 +1013,7 @@ p_abs_acc_pred_error <- ggplot(pred_acc_error, aes(x = abs_acc_pred_error, fill 
 p_abs_acc_pred_error
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-35-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-34-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_abs_acc_pred_error, file.path("..", "output", "acc_absolute_prediction_error.png"),
@@ -1021,14 +1038,14 @@ ggplot(pred_acc_error_avg, aes(x = prediction_label, y = mae, colour = course)) 
        colour = "Course")
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-36-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-35-1.png)<!-- -->
 
 Fit a regression model.
 
 ##### French
 
 ``` r
-m_acc_pred_error_gl_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Grandes_Lignes.rda")
+m_acc_pred_error_gl_file <- file.path("..", "data", "model_fits", "m_acc_pred_error_Grandes_Lignes_new.rda")
 
 if (file.exists(m_acc_pred_error_gl_file)) {
   load(m_acc_pred_error_gl_file)
@@ -1059,26 +1076,26 @@ summary(m_acc_pred_error_gl)
     ##    Data: pred_gl_reg
     ## Control: lmerControl(optimizer = "bobyqa")
     ## 
-    ## REML criterion at convergence: -2363469
+    ## REML criterion at convergence: -1051298
     ## 
     ## Scaled residuals: 
     ##     Min      1Q  Median      3Q     Max 
-    ## -7.2812 -0.4159 -0.0378  0.4040  8.0239 
+    ## -4.5692 -0.5355 -0.0828  0.4664  4.9073 
     ## 
     ## Random effects:
-    ##  Groups   Name        Variance  Std.Dev.
-    ##  user_id  (Intercept) 0.0004139 0.02034 
-    ##  fact_id  (Intercept) 0.0004236 0.02058 
-    ##  Residual             0.0051894 0.07204 
-    ## Number of obs: 1000000, groups:  user_id, 40974; fact_id, 22910
+    ##  Groups   Name        Variance Std.Dev.
+    ##  user_id  (Intercept) 0.001687 0.04108 
+    ##  fact_id  (Intercept) 0.002174 0.04662 
+    ##  Residual             0.019154 0.13840 
+    ## Number of obs: 1000000, groups:  user_id, 41014; fact_id, 22541
     ## 
     ## Fixed effects:
     ##                                  Estimate Std. Error         df t value
-    ## (Intercept)                     4.900e-01  2.656e-04  6.217e+04 1844.99
-    ## prediction_labelDomain         -1.095e-02  2.277e-04  9.749e+05  -48.09
-    ## prediction_labelFact           -1.586e-02  2.292e-04  9.751e+05  -69.17
-    ## prediction_labelLearner        -1.256e-02  2.310e-04  9.757e+05  -54.37
-    ## prediction_labelFact & Learner -2.083e-02  2.321e-04  9.760e+05  -89.73
+    ## (Intercept)                     4.780e-01  5.493e-04  5.561e+04  870.21
+    ## prediction_labelDomain         -2.752e-02  4.385e-04  9.736e+05  -62.76
+    ## prediction_labelFact           -3.682e-02  4.409e-04  9.734e+05  -83.50
+    ## prediction_labelLearner        -2.963e-02  4.447e-04  9.745e+05  -66.63
+    ## prediction_labelFact & Learner -4.948e-02  4.466e-04  9.743e+05 -110.80
     ##                                Pr(>|t|)    
     ## (Intercept)                      <2e-16 ***
     ## prediction_labelDomain           <2e-16 ***
@@ -1090,10 +1107,10 @@ summary(m_acc_pred_error_gl)
     ## 
     ## Correlation of Fixed Effects:
     ##             (Intr) prdc_D prdc_F prdc_L
-    ## prdctn_lblD -0.429                     
-    ## prdctn_lblF -0.420  0.497              
-    ## prdctn_lblL -0.416  0.493  0.490       
-    ## prdctn_lF&L -0.408  0.490  0.488  0.486
+    ## prdctn_lblD -0.400                     
+    ## prdctn_lblF -0.391  0.498              
+    ## prdctn_lblL -0.387  0.494  0.491       
+    ## prdctn_lF&L -0.379  0.492  0.490  0.487
 
 Compare different prediction types to each other:
 
@@ -1112,35 +1129,35 @@ summary(ht_acc_gl)
     ##     (1 | fact_id), data = pred_gl_reg, control = lmerControl(optimizer = "bobyqa"))
     ## 
     ## Linear Hypotheses:
-    ##                                 Estimate Std. Error z value Pr(>|z|)    
-    ## Domain - Default == 0         -0.0109525  0.0002277 -48.092   <1e-10 ***
-    ## Fact - Default == 0           -0.0158576  0.0002292 -69.173   <1e-10 ***
-    ## Learner - Default == 0        -0.0125564  0.0002310 -54.367   <1e-10 ***
-    ## Fact & Learner - Default == 0 -0.0208270  0.0002321 -89.730   <1e-10 ***
-    ## Fact - Domain == 0            -0.0049051  0.0002293 -21.396   <1e-10 ***
-    ## Learner - Domain == 0         -0.0016039  0.0002310  -6.944   <1e-10 ***
-    ## Fact & Learner - Domain == 0  -0.0098745  0.0002322 -42.532   <1e-10 ***
-    ## Learner - Fact == 0            0.0033012  0.0002324  14.202   <1e-10 ***
-    ## Fact & Learner - Fact == 0    -0.0049694  0.0002334 -21.290   <1e-10 ***
-    ## Fact & Learner - Learner == 0 -0.0082706  0.0002348 -35.222   <1e-10 ***
+    ##                                 Estimate Std. Error  z value Pr(>|z|)    
+    ## Domain - Default == 0         -0.0275203  0.0004385  -62.756   <1e-04 ***
+    ## Fact - Default == 0           -0.0368192  0.0004409  -83.500   <1e-04 ***
+    ## Learner - Default == 0        -0.0296312  0.0004447  -66.628   <1e-04 ***
+    ## Fact & Learner - Default == 0 -0.0494821  0.0004466 -110.800   <1e-04 ***
+    ## Fact - Domain == 0            -0.0092989  0.0004405  -21.110   <1e-04 ***
+    ## Learner - Domain == 0         -0.0021109  0.0004443   -4.751   <1e-04 ***
+    ## Fact & Learner - Domain == 0  -0.0219618  0.0004461  -49.228   <1e-04 ***
+    ## Learner - Fact == 0            0.0071880  0.0004466   16.095   <1e-04 ***
+    ## Fact & Learner - Fact == 0    -0.0126629  0.0004481  -28.260   <1e-04 ***
+    ## Fact & Learner - Learner == 0 -0.0198509  0.0004512  -43.993   <1e-04 ***
     ## ---
     ## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
     ## (Adjusted p values reported -- single-step method)
 
-Inspect the model's residuals:
+Inspect the model’s residuals:
 
 ``` r
 qqnorm(resid(m_acc_pred_error_gl))
 qqline(resid(m_acc_pred_error_gl), col = "red")
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-39-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-38-1.png)<!-- -->
 
 ``` r
 plot(m_acc_pred_error_gl)
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-40-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-39-1.png)<!-- -->
 
 ##### English
 
@@ -1245,20 +1262,20 @@ summary(ht_acc_ss)
     ## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
     ## (Adjusted p values reported -- single-step method)
 
-Inspect the model's residuals:
+Inspect the model’s residuals:
 
 ``` r
 qqnorm(resid(m_acc_pred_error_ss))
 qqline(resid(m_acc_pred_error_ss), col = "red")
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-43-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-42-1.png)<!-- -->
 
 ``` r
 plot(m_acc_pred_error_ss)
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-44-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-43-1.png)<!-- -->
 
 ##### Comparison
 
@@ -1273,7 +1290,7 @@ ht_acc_both_tidy <- rbind(ht_acc_gl_tidy[, course := "French"],
 ```
 
 ``` r
-p_acc_pred_error_comp <- ggplot(ht_acc_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+p_acc_pred_error_comp <- ggplot(ht_acc_both_tidy, aes(x = contrast, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
   geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
   geom_errorbar(width = 0.1) + 
   geom_point() +
@@ -1286,7 +1303,7 @@ p_acc_pred_error_comp <- ggplot(ht_acc_both_tidy, aes(x = lhs, y = estimate, ymi
 p_acc_pred_error_comp
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-46-1.png)
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-45-1.png)<!-- -->
 
 ``` r
 ggsave(plot = p_acc_pred_error_comp, file.path("..", "output", "acc_prediction_error_comparisons.png"),
@@ -1312,7 +1329,7 @@ annotation_df_ss <- data.table(
           4, 5,
           5
   ),
-  y = seq(max(pred_acc_error_avg$mae)*1.01 + .01125, max(pred_acc_error_avg$mae)*1.01, by = -.00125),
+  y = seq(max(pred_acc_error_avg$mae)*1.01 + .0225, max(pred_acc_error_avg$mae)*1.01, by = -.0025),
   label = c("p < .001", "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001",
@@ -1331,7 +1348,7 @@ annotation_df_gl <- data.table(
           4, 5,
           5
   ),
-  y = seq(max(pred_acc_error_avg$mae)*1.01 + .01125, max(pred_acc_error_avg$mae)*1.01, by = -.00125),
+  y = seq(max(pred_acc_error_avg$mae)*1.01 + .0225, max(pred_acc_error_avg$mae)*1.01, by = -.0025),
   label = c("p < .001", "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001", "p < .001",
             "p < .001", "p < .001",
@@ -1352,7 +1369,7 @@ p_acc_pred_error_summary <- ggplot(pred_acc_error_avg, aes(x = prediction_rank, 
              colour = "black", 
              alpha = .9,
              label.size = NA, 
-             nudge_y = -.004) +
+             nudge_y = -.007) +
   labs(x = NULL,
        y = "Absolute prediction error:\nresponse accuracy",
        colour = "Course") +
@@ -1362,11 +1379,13 @@ p_acc_pred_error_summary <- ggplot(pred_acc_error_avg, aes(x = prediction_rank, 
                                    "p < .01" = 5,
                                    "p < .05" = 2,
                                    "n.s." = 3),
+                        drop = FALSE,
                         name = "Pairwise comparison:") +
   scale_alpha_manual(values = c("p < .001" = 1,
                                 "p < .01" = .75,
                                 "p < .05" = .5, 
                                 "n.s." = .25), 
+                     drop = FALSE,
                      name = "Pairwise comparison:") +
   guides(colour = "none") +
   ggsignif::geom_signif(data = annotation_df_acc,
@@ -1378,18 +1397,34 @@ p_acc_pred_error_summary <- ggplot(pred_acc_error_avg, aes(x = prediction_rank, 
         legend.justification = "right")
 ```
 
-    ## Warning: Ignoring unknown aesthetics: xmin, xmax, annotations, y_position
+    ## Warning in ggsignif::geom_signif(data = annotation_df_acc, aes(xmin = start, :
+    ## Ignoring unknown aesthetics: xmin, xmax, annotations, and y_position
 
 ``` r
 p_acc_pred_error_summary
 ```
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-47-1.png)
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-46-1.png)<!-- -->
 
 ``` r
 ggsave(file.path("..", "output", "acc_absolute_prediction_error_summary.png"),
        device = "png", width = 10, height = 4)
 ```
+
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+    ## The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
 
 ##### Improvement
 
@@ -1399,25 +1434,25 @@ French:
 
 ``` r
 # Absolute change
-ht_acc_gl_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+ht_acc_gl_tidy[contrast == "Fact & Learner - Default", estimate[1]]
 ```
 
-    ## [1] -0.02082699
+    ## [1] -0.04948212
 
 ``` r
 # % change
 scales::percent(
-  ht_acc_gl_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_gl)[[1]],
+  ht_acc_gl_tidy[contrast == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_gl)[[1]],
   accuracy = .1)
 ```
 
-    ## [1] "-4.3%"
+    ## [1] "-10.4%"
 
 English:
 
 ``` r
 # Absolute change
-ht_acc_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+ht_acc_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]]
 ```
 
     ## [1] -0.01969055
@@ -1425,7 +1460,7 @@ ht_acc_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
 ``` r
 # % change
 scales::percent(
-  ht_acc_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_ss)[[1]],
+  ht_acc_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]] / fixef(m_acc_pred_error_ss)[[1]],
   accuracy = .1)
 ```
 
@@ -1440,18 +1475,45 @@ scales::percent(
   theme(legend.position = "bottom")
 ```
 
-    ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
-    ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+    ## The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+    ## The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+    ## The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
 
     ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
     ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
 
-![](05_evaluate_behavioural_predictions_files/figure-markdown_github/unnamed-chunk-50-1.png)
+    ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
+    ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
+
+![](05_evaluate_behavioural_predictions_files/figure-gfm/unnamed-chunk-49-1.png)<!-- -->
 
 ``` r
 ggsave(file.path("..", "output", "beh_absolute_prediction_error_summary.png"),
        device = "png", width = 10, height = 8)
 ```
+
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+
+    ## Warning: The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+    ## The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
+    ## The following aesthetics were dropped during statistical transformation: xmin, xmax, y_position
+    ## ℹ This can happen when ggplot fails to infer the correct grouping structure in the data.
+    ## ℹ Did you forget to specify a `group` aesthetic or to convert a numerical variable into a factor?
 
     ## Warning in prettyNum(.Internal(format(x, trim, digits, nsmall, width, 3L, :
     ## 'big.mark' and 'decimal.mark' are both '.', which could be confusing
@@ -1465,50 +1527,48 @@ ggsave(file.path("..", "output", "beh_absolute_prediction_error_summary.png"),
 sessionInfo()
 ```
 
-    ## R version 3.6.3 (2020-02-29)
-    ## Platform: x86_64-pc-linux-gnu (64-bit)
-    ## Running under: Ubuntu 18.04.6 LTS
+    ## R version 4.3.1 (2023-06-16)
+    ## Platform: aarch64-apple-darwin20 (64-bit)
+    ## Running under: macOS Sonoma 14.2.1
     ## 
     ## Matrix products: default
-    ## BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.7.1
-    ## LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.7.1
+    ## BLAS:   /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRblas.0.dylib 
+    ## LAPACK: /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.11.0
     ## 
     ## locale:
-    ##  [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C              
-    ##  [3] LC_TIME=en_GB.UTF-8        LC_COLLATE=en_US.UTF-8    
-    ##  [5] LC_MONETARY=en_GB.UTF-8    LC_MESSAGES=en_US.UTF-8   
-    ##  [7] LC_PAPER=en_GB.UTF-8       LC_NAME=C                 
-    ##  [9] LC_ADDRESS=C               LC_TELEPHONE=C            
-    ## [11] LC_MEASUREMENT=en_GB.UTF-8 LC_IDENTIFICATION=C       
+    ## [1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+    ## 
+    ## time zone: Europe/Amsterdam
+    ## tzcode source: internal
     ## 
     ## attached base packages:
     ## [1] stats     graphics  grDevices utils     datasets  methods   base     
     ## 
     ## other attached packages:
-    ##  [1] dplyr_1.0.7       multcomp_1.4-10   TH.data_1.0-10   
-    ##  [4] MASS_7.3-51.4     survival_2.44-1.1 mvtnorm_1.1-1    
-    ##  [7] lmerTest_3.1-0    lme4_1.1-21       Matrix_1.2-18    
-    ## [10] wesanderson_0.3.6 patchwork_1.1.1   ggplot2_3.3.5    
-    ## [13] stringr_1.4.0     furrr_0.1.0       future_1.13.0    
-    ## [16] purrr_0.3.2       tidyr_1.0.0       data.table_1.13.6
-    ## [19] fst_0.9.0        
+    ##  [1] fstcore_0.9.14    dplyr_1.1.3       multcomp_1.4-25   TH.data_1.1-2    
+    ##  [5] MASS_7.3-60       survival_3.5-7    mvtnorm_1.2-3     lmerTest_3.1-3   
+    ##  [9] lme4_1.1-34       Matrix_1.6-1.1    wesanderson_0.3.6 patchwork_1.1.3  
+    ## [13] ggplot2_3.4.3     stringr_1.5.0     furrr_0.3.1       future_1.33.0    
+    ## [17] purrr_1.0.2       tidyr_1.3.0       data.table_1.14.8 fst_0.9.8        
     ## 
     ## loaded via a namespace (and not attached):
-    ##  [1] zoo_1.8-6           tidyselect_1.1.1    xfun_0.21          
-    ##  [4] listenv_0.7.0       splines_3.6.3       lattice_0.20-41    
-    ##  [7] colorspace_1.4-1    vctrs_0.3.8         generics_0.1.0     
-    ## [10] htmltools_0.3.6     mgcv_1.8-28         yaml_2.2.0         
-    ## [13] utf8_1.1.4          rlang_0.4.10        pillar_1.6.3       
-    ## [16] nloptr_1.2.1        glue_1.4.2          withr_2.3.0        
-    ## [19] DBI_1.1.0           lifecycle_1.0.1     ggsignif_0.5.0     
-    ## [22] munsell_0.5.0       gtable_0.3.0        codetools_0.2-16   
-    ## [25] evaluate_0.14       labeling_0.3        knitr_1.23         
-    ## [28] parallel_3.6.3      fansi_0.4.0         broom_0.5.2        
-    ## [31] Rcpp_1.0.6          backports_1.1.4     scales_1.1.1       
-    ## [34] jsonlite_1.6        farver_2.1.0        digest_0.6.19      
-    ## [37] stringi_1.4.3       numDeriv_2016.8-1.1 grid_3.6.3         
-    ## [40] tools_3.6.3         sandwich_2.5-1      magrittr_2.0.1     
-    ## [43] tibble_2.1.3        crayon_1.4.1        pkgconfig_2.0.2    
-    ## [46] ellipsis_0.3.2      minqa_1.2.4         rmarkdown_2.6      
-    ## [49] R6_2.4.0            globals_0.12.4      boot_1.3-25        
-    ## [52] nlme_3.1-149        compiler_3.6.3
+    ##  [1] gtable_0.3.4        xfun_0.40           bslib_0.5.1        
+    ##  [4] lattice_0.21-9      numDeriv_2016.8-1.1 vctrs_0.6.3        
+    ##  [7] tools_4.3.1         generics_0.1.3      parallel_4.3.1     
+    ## [10] sandwich_3.0-2      tibble_3.2.1        fansi_1.0.4        
+    ## [13] pkgconfig_2.0.3     lifecycle_1.0.3     farver_2.1.1       
+    ## [16] compiler_4.3.1      munsell_0.5.0       codetools_0.2-19   
+    ## [19] htmltools_0.5.6     sass_0.4.7          yaml_2.3.7         
+    ## [22] crayon_1.5.2        pillar_1.9.0        nloptr_2.0.3       
+    ## [25] jquerylib_0.1.4     cachem_1.0.8        boot_1.3-28.1      
+    ## [28] nlme_3.1-163        parallelly_1.36.0   tidyselect_1.2.0   
+    ## [31] digest_0.6.33       stringi_1.7.12      listenv_0.9.0      
+    ## [34] labeling_0.4.3      splines_4.3.1       fastmap_1.1.1      
+    ## [37] grid_4.3.1          colorspace_2.1-0    cli_3.6.1          
+    ## [40] magrittr_2.0.3      utf8_1.2.3          broom_1.0.5        
+    ## [43] withr_2.5.1         backports_1.4.1     scales_1.2.1       
+    ## [46] rmarkdown_2.25      globals_0.16.2      ggsignif_0.6.4     
+    ## [49] zoo_1.8-12          evaluate_0.22       knitr_1.44         
+    ## [52] mgcv_1.9-0          rlang_1.1.1         Rcpp_1.0.11        
+    ## [55] glue_1.6.2          rstudioapi_0.15.0   minqa_1.2.6        
+    ## [58] jsonlite_1.8.7      R6_2.5.1

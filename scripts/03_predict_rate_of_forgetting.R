@@ -8,7 +8,7 @@ library(tidyr)
 library(rsample)
 library(extraDistr)
 
-future::plan("multiprocess", workers = 6) # Set to desired number of cores
+future::plan("multisession", workers = 6) # Set to desired number of cores
 
 
 source(file.path("scripts", "99_bayes_funs.R"))

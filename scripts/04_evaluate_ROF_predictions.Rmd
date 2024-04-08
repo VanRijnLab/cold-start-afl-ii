@@ -34,6 +34,7 @@ library(wesanderson)
 library(lme4)
 library(lmerTest)
 library(multcomp)
+library(emmeans)
 ```
 
 ```{r}
@@ -41,7 +42,7 @@ source(file.path("..", "scripts", "99_slimstampen_model_funs.R"))
 ```
 
 ```{r}
-future::plan("multiprocess", workers = 6) # Set to desired number of cores
+future::plan("multisession", workers = 6) # Set to desired number of cores
 ```
 
 ```{r}
@@ -119,7 +120,7 @@ p_rof_dist <- ggplot(pred_both, aes(x = value, fill = prediction_label)) +
   facet_grid(prediction_label ~ course, scales = "free_y") +
   geom_histogram(aes(y = ..density..), binwidth = .01) +
   guides(fill = "none") +
-  labs(x = "Predicted rate of forgetting",
+  labs(x = "Predicted Speed of Forgetting",
        y = "Density") +
   scale_fill_manual(values = condition_colours)
 
@@ -137,7 +138,7 @@ To assess the accuracy of predictions, we compute the mean absolute error (MAE) 
 
 ```{r}
 pred_mae <- pred_both[, .(mae = mean(abs(alpha - value)),
-                          ae_se = sd(abs(alpha - value))/.N), 
+                          ae_se = sd(abs(alpha - value))/sqrt(.N)), 
                       by = .(course, prediction_label)]
 
   
@@ -181,8 +182,8 @@ p_rof_pred_v_obs <- ggplot(pred_both,
             y = rof_max,
             hjust = 1, colour = "black", size = 3) +
   guides(colour = "none") +
-  labs(x = "Predicted rate of forgetting",
-       y = "Observed rate of forgetting") +
+  labs(x = "Predicted Speed of Forgetting α",
+       y = "Observed Speed of Forgetting α") +
   coord_fixed(ratio = 1, xlim = c(rof_min, rof_max), ylim = c(rof_min, rof_max)) +
   scale_x_continuous(breaks = rof_breaks) +
   scale_y_continuous(breaks = rof_breaks) +
@@ -209,7 +210,7 @@ p_rof_pred_error <- ggplot(pred_both, aes(x = prediction_error, fill = predictio
   facet_grid(prediction_label ~ course, scales = "free_y") +
   geom_histogram(aes(y = ..density..), binwidth = .01) +
   guides(fill = "none") +
-  labs(x = "ROF prediction error (predicted - observed)",
+  labs(x = "SoF prediction error (predicted - observed)",
        y = "Density") +
   scale_fill_manual(values = condition_colours)
 
@@ -234,7 +235,7 @@ p_rof_abs_pred_error <- ggplot(pred_both, aes(x = abs_prediction_error, fill = p
   facet_grid(prediction_label ~ course, scales = "free_y") +
   geom_histogram(aes(y = ..density..), binwidth = .01) +
   guides(fill = "none") +
-  labs(x = "Absolute ROF prediction error",
+  labs(x = "Absolute SoF prediction error",
        y = "Density") +
   scale_fill_manual(values = condition_colours)
 
@@ -245,7 +246,7 @@ ggsave(plot = p_rof_abs_pred_error, file.path("..", "output", "rof_absolute_pred
 ```
 
 ```{r}
-pred_error_summarised <- pred_both[, .(error_mean = mean(abs_prediction_error), error_se = sd(abs_prediction_error)/.N), by = .(course, prediction_label)]
+pred_error_summarised <- pred_both[, .(error_mean = mean(abs_prediction_error), error_se = sd(abs_prediction_error)/sqrt(.N)), by = .(course, prediction_label)]
 
 ggplot(pred_error_summarised, aes(x = prediction_label, y = error_mean, colour = course)) +
   geom_boxplot(data = pred_both,
@@ -258,7 +259,7 @@ ggplot(pred_error_summarised, aes(x = prediction_label, y = error_mean, colour =
   geom_point(position = position_dodge(width = .5)) +
   coord_cartesian(ylim = c(0, 0.175)) +
   labs(x = "Method",
-       y = "Absolute rate of forgetting prediction error",
+       y = "Absolute SoF prediction error",
        colour = "Course")
 ```
 
@@ -297,6 +298,17 @@ Compare different prediction types to each other:
 ht_gl <- glht(m_rof_pred_error_gl, linfct = mcp(prediction_label = "Tukey"))
 summary(ht_gl)
 ```
+Use `emmeans` to estimate the standardised effect size for each contrast:
+```{r}
+emm_gl <- emmeans(m_rof_pred_error_gl, "prediction_label", lmer.df = "asymptotic")
+# Sigma calculation follows the example in the eff_size documentation (see also Westfall et al., 2014)
+vc_gl <- as.data.frame(VarCorr(m_rof_pred_error_gl)) 
+sigma_gl <- sqrt(sum(vc_gl$vcov))
+eff_size_gl <- eff_size(emm_gl, sigma = sigma_gl, edf = Inf) # Choice of edf does not affect effect size, only the SE
+eff_size_gl
+```
+
+
 
 Inspect the model's residuals:
 ```{r}
@@ -346,6 +358,17 @@ ht_ss <- glht(m_pred_error, linfct = mcp(prediction_label = "Tukey"))
 summary(ht_ss)
 ```
 
+Use `emmeans` to estimate the standardised effect size for each contrast:
+```{r}
+emm_ss <- emmeans(m_pred_error, "prediction_label", lmer.df = "asymptotic")
+# Sigma calculation follows the example in the eff_size documentation (see also Westfall et al., 2014)
+vc_ss <- as.data.frame(VarCorr(m_pred_error)) 
+sigma_ss <- sqrt(sum(vc_ss$vcov))
+eff_size_ss <- eff_size(emm_ss, sigma = sigma_ss, edf = Inf) # Choice of edf does not affect effect size, only the SE
+eff_size_ss
+```
+
+
 Inspect the model's residuals:
 ```{r}
 qqnorm(resid(m_pred_error))
@@ -365,7 +388,7 @@ ht_both_tidy <- rbind(ht_gl_tidy[, course := "French"],
 ```
 
 ```{r}
-p_rof_pred_error_comp <- ggplot(ht_both_tidy, aes(x = lhs, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
+p_rof_pred_error_comp <- ggplot(ht_both_tidy, aes(x = contrast, y = estimate, ymin = conf.low, ymax = conf.high, colour = course)) +
   geom_hline(yintercept = 0, linetype = "11", colour = "grey60") +
   geom_errorbar(width = 0.1) + 
   geom_point() +
@@ -409,7 +432,7 @@ p_rof_abs_pred_error_summ <- ggplot(pred_error_summarised, aes(x = reorder(predi
             position = position_nudge(x = .5, y = c(rep(0, 9), .001)),
             hjust = .5) +
   labs(x = "Method",
-       y = "Absolute rate of forgetting prediction error",
+       y = "Absolute SoF prediction error",
        colour = "Course") +
   scale_colour_manual(values = dataset_colours) +
   theme(legend.position = c(.85, .85))
@@ -478,19 +501,22 @@ p_rof_pred_error_summary <- ggplot(pred_error_summarised, aes(x = prediction_ran
              label.size = NA, 
              nudge_y = -.0025) +
   labs(x = NULL,
-       y = "Absolute prediction error:\nrate of forgetting",
+       y = "Absolute prediction error:\nSpeed of Forgetting α",
        colour = "Course") +
   scale_x_continuous(expand = expansion(add = .75), breaks = NULL) +
+  scale_y_continuous(limits = c(0, NA)) +
   scale_colour_manual(values = dataset_colours) +
   scale_linetype_manual(values = c("p < .001" = 1,
                                    "p < .01" = 5,
                                    "p < .05" = 2,
                                    "n.s." = 3),
+                        drop = FALSE,
                         name = "Pairwise comparison:") +
   scale_alpha_manual(values = c("p < .001" = 1,
                                 "p < .01" = .75,
                                 "p < .05" = .5, 
-                                "n.s." = .25), 
+                                "n.s." = .25),
+                     drop = FALSE,
                      name = "Pairwise comparison:") +
   guides(colour = "none") +
   ggsignif::geom_signif(data = annotation_df_rof,
@@ -504,7 +530,7 @@ p_rof_pred_error_summary <- ggplot(pred_error_summarised, aes(x = prediction_ran
 p_rof_pred_error_summary
 
 ggsave(file.path("..", "output", "rof_absolute_prediction_error_summary.png"),
-       device = "png", width = 10, height = 4)
+       device = "png", width = 10, height = 8)
 ```
 
 #### Improvement
@@ -514,25 +540,32 @@ How big was the improvement from worst to best prediction method?
 French:
 ```{r}
 # Absolute change
-ht_gl_tidy[lhs == "Fact - Default", estimate[1]]
+ht_gl_tidy[contrast == "Fact - Default", estimate[1]]
 
 # % change
 scales::percent(
-  ht_gl_tidy[lhs == "Fact - Default", estimate[1]] / fixef(m_rof_pred_error_gl)[[1]],
+  ht_gl_tidy[contrast == "Fact - Default", estimate[1]] / fixef(m_rof_pred_error_gl)[[1]],
   accuracy = .1)
+
+# Associated standardised effect size
+eff_size_gl_tidy <- broom::tidy(eff_size_gl) |> as.data.table()
+eff_size_gl_tidy[contrast == "Default - Fact", estimate]
 ```
 
 English:
 ```{r}
 # Absolute change
-ht_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]]
+ht_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]]
 
 # % change
 scales::percent(
-  ht_ss_tidy[lhs == "Fact & Learner - Default", estimate[1]] / fixef(m_pred_error)[[1]],
+  ht_ss_tidy[contrast == "Fact & Learner - Default", estimate[1]] / fixef(m_pred_error)[[1]],
   accuracy = .1)
-```
 
+# Associated standardised effect size
+eff_size_ss_tidy <- broom::tidy(eff_size_ss) |> as.data.table()
+eff_size_ss_tidy[contrast == "Default - Fact & Learner", estimate]
+```
 
 
 ### Visualise prediction error
@@ -563,7 +596,7 @@ ggplot(pred_user_q, aes(x = user_order)) +
   geom_line(aes(y = median), lwd = 1) +
   geom_hline(data = NULL, yintercept = 0, lty = 3) +
     labs(x = "Learners",
-       y = "Rate of forgetting prediction error\n(predicted - observed)") +
+       y = "SoF prediction error\n(predicted - observed)") +
   scale_fill_manual(values = dataset_colours) +
   guides(fill = "none") +
   theme(axis.text.x = element_blank(),
@@ -593,7 +626,7 @@ ggplot(pred_user_q, aes(x = user_order)) +
   geom_ribbon(aes(ymin = q25, ymax = q75, fill = course), alpha = .5) +
   geom_line(aes(y = median), lwd = 1) +
     labs(x = "Learners",
-       y = "Absolute rate of forgetting prediction error") +
+       y = "Absolute SoF prediction error") +
   scale_fill_manual(values = dataset_colours) +
   guides(fill = "none") +
   theme(axis.text.x = element_blank(),
@@ -611,7 +644,7 @@ ggplot(pred_user_q, aes(x = user_order, group = prediction_label, colour = predi
   geom_ribbon(aes(ymin = q25, ymax = q75, fill = prediction_label), colour = NA, alpha = .15) +
   geom_line(aes(y = median), lwd = 1) +
     labs(x = "Learners",
-       y = "Absolute rate of forgetting prediction error",
+       y = "Absolute SoF prediction error",
        colour = "Prediction\nmethod",
        fill = "Prediction\nmethod") +
   scale_colour_manual(values = condition_colours) +
@@ -651,7 +684,7 @@ ggplot(pred_fact_q, aes(x = fact_order)) +
   geom_line(aes(y = median), lwd = 1) +
   geom_hline(data = NULL, yintercept = 0, lty = 3) +
     labs(x = "Facts",
-       y = "Rate of forgetting prediction error\n(predicted - observed)") +
+       y = "SoF prediction error\n(predicted - observed)") +
   scale_fill_manual(values = dataset_colours) +
   guides(fill = "none") +
   theme(axis.text.x = element_blank(),
@@ -681,7 +714,7 @@ ggplot(pred_fact_q, aes(x = fact_order)) +
   geom_ribbon(aes(ymin = q25, ymax = q75, fill = course), alpha = .5) +
   geom_line(aes(y = median), lwd = 1) +
     labs(x = "Facts",
-       y = "Absolute rate of forgetting prediction error") +
+       y = "Absolute SoF prediction error") +
   scale_fill_manual(values = dataset_colours) +
   guides(fill = "none") +
   theme(axis.text.x = element_blank(),
@@ -699,7 +732,7 @@ ggplot(pred_fact_q, aes(x = fact_order, group = prediction_label, colour = predi
   geom_ribbon(aes(ymin = q25, ymax = q75, fill = prediction_label), colour = NA, alpha = .15) +
   geom_line(aes(y = median), lwd = 1) +
     labs(x = "Facts",
-       y = "Absolute rate of forgetting prediction error",
+       y = "Absolute SoF prediction error",
        colour = "Prediction\nmethod",
        fill = "Prediction\nmethod") +
   scale_colour_manual(values = condition_colours) +
@@ -718,7 +751,7 @@ ggsave(file.path("..", "output", "rof_abs_prediction_error_by_fact_condensed.png
 ggplot(pred_both, aes(x = abs_prediction_error, colour = prediction_label, fill = prediction_label)) +
   facet_grid(~ course) +
   geom_density(alpha = .1) +
-      labs(x = "Absolute rate of forgetting prediction error",
+      labs(x = "Absolute SoF prediction error",
        y = "Density",
        colour = "Prediction\nmethod",
        fill = "Prediction\nmethod") +
